@@ -1,1 +1,0 @@
-# kernel_msm7627a_delos3geur
