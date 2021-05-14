@@ -39,7 +39,6 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
-#include <linux/irq.h>
 #include <linux/seq_file.h>
 
 #include <asm/cacheflush.h>
@@ -123,19 +122,16 @@ void release_fiq(struct fiq_handler *f)
 	while (current_fiq->fiq_op(current_fiq->dev_id, 0));
 }
 
+static int fiq_start;
+
 void enable_fiq(int fiq)
 {
-	enable_irq(fiq + FIQ_START);
+	enable_irq(fiq + fiq_start);
 }
 
 void disable_fiq(int fiq)
 {
-	disable_irq(fiq + FIQ_START);
-}
-
-void fiq_set_type(int fiq, unsigned int type)
-{
-	irq_set_irq_type(fiq + FIQ_START, type);
+	disable_irq(fiq + fiq_start);
 }
 
 EXPORT_SYMBOL(set_fiq_handler);
@@ -145,9 +141,9 @@ EXPORT_SYMBOL(claim_fiq);
 EXPORT_SYMBOL(release_fiq);
 EXPORT_SYMBOL(enable_fiq);
 EXPORT_SYMBOL(disable_fiq);
-EXPORT_SYMBOL(fiq_set_type);
 
-void __init init_FIQ(void)
+void __init init_FIQ(int start)
 {
 	no_fiq_insn = *(unsigned long *)0xffff001c;
+	fiq_start = start;
 }

@@ -380,30 +380,6 @@ int rtc_set_alarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
 }
 EXPORT_SYMBOL_GPL(rtc_set_alarm);
 
-#ifdef CONFIG_RTC_AUTO_PWRON
-int rtc_set_bootalarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
-{
-	int err;
-
-/*	err = mutex_lock_interruptible(&rtc->ops_lock); */
-/*	if (err) */
-/*		return err; */
-
-	if (!rtc->ops) {
-		dev_err(&rtc->dev, "ops not exist\n");
-		err = -ENODEV;
-	} else if (!rtc->ops->set_bootalarm) {
-		dev_err(&rtc->dev, "bootalarm func not exist\n");
-		err = -EINVAL;
-	} else
-		err = rtc->ops->set_bootalarm(rtc->dev.parent, alarm);
-
-/*	mutex_unlock(&rtc->ops_lock); */
-	return err;
-}
-EXPORT_SYMBOL_GPL(rtc_set_bootalarm);
-#endif /* CONFIG_RTC_AUTO_PWRON */
-
 /* Called once per device from rtc_device_register */
 int rtc_initialize_alarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
 {
@@ -606,20 +582,21 @@ enum hrtimer_restart rtc_pie_update_irq(struct hrtimer *timer)
 void rtc_update_irq(struct rtc_device *rtc,
 		unsigned long num, unsigned long events)
 {
+	pm_stay_awake(rtc->dev.parent);
 	schedule_work(&rtc->irqwork);
 }
 EXPORT_SYMBOL_GPL(rtc_update_irq);
 
-static int __rtc_match(struct device *dev, void *data)
+static int __rtc_match(struct device *dev, const void *data)
 {
-	char *name = (char *)data;
+	const char *name = data;
 
 	if (strcmp(dev_name(dev), name) == 0)
 		return 1;
 	return 0;
 }
 
-struct rtc_device *rtc_class_open(char *name)
+struct rtc_device *rtc_class_open(const char *name)
 {
 	struct device *dev;
 	struct rtc_device *rtc = NULL;
@@ -868,6 +845,7 @@ void rtc_timer_do_work(struct work_struct *work)
 
 	mutex_lock(&rtc->ops_lock);
 again:
+	pm_relax(rtc->dev.parent);
 	__rtc_read_time(rtc, &tm);
 	now = rtc_tm_to_ktime(tm);
 	while ((next = timerqueue_getnext(&rtc->timerqueue))) {

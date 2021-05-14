@@ -29,8 +29,6 @@
 #define STACK_TOP_MAX	TASK_SIZE
 #endif
 
-extern unsigned int boot_reason;
-
 struct debug_info {
 #ifdef CONFIG_HAVE_HW_BREAKPOINT
 	struct perf_event	*hbp[ARM_MAX_HBP_SLOTS];
@@ -79,9 +77,6 @@ struct task_struct;
 /* Free all resources held by a thread. */
 extern void release_thread(struct task_struct *);
 
-/* Prepare to copy thread state - unlazy all lazy status */
-#define prepare_to_copy(tsk)	do { } while (0)
-
 unsigned long get_wchan(struct task_struct *p);
 
 #if __LINUX_ARM_ARCH__ == 6 || defined(CONFIG_ARM_ERRATA_754327)
@@ -89,13 +84,6 @@ unsigned long get_wchan(struct task_struct *p);
 #else
 #define cpu_relax()			barrier()
 #endif
-
-void cpu_idle_wait(void);
-
-/*
- * Create a new kernel thread
- */
-extern int kernel_thread(int (*fn)(void *), void *arg, unsigned long flags);
 
 #define task_pt_regs(p) \
 	((struct pt_regs *)(THREAD_START_SP + task_stack_page(p)) - 1)
@@ -125,6 +113,8 @@ static inline void prefetch(const void *ptr)
 #define spin_lock_prefetch(x) do { } while (0)
 
 #endif
+
+#define HAVE_ARCH_PICK_MMAP_LAYOUT
 
 #endif
 

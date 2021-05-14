@@ -36,19 +36,16 @@ int key_task_permission(const key_ref_t key_ref, const struct cred *cred,
 
 	key = key_ref_to_ptr(key_ref);
 
-	if (key->user->user_ns != cred->user->user_ns)
-		goto use_other_perms;
-
 	/* use the second 8-bits of permissions for keys the caller owns */
-	if (key->uid == cred->fsuid) {
+	if (uid_eq(key->uid, cred->fsuid)) {
 		kperm = key->perm >> 16;
 		goto use_these_perms;
 	}
 
 	/* use the third 8-bits of permissions for keys the caller has a group
 	 * membership in common with */
-	if (key->gid != -1 && key->perm & KEY_GRP_ALL) {
-		if (key->gid == cred->fsgid) {
+	if (gid_valid(key->gid) && key->perm & KEY_GRP_ALL) {
+		if (gid_eq(key->gid, cred->fsgid)) {
 			kperm = key->perm >> 8;
 			goto use_these_perms;
 		}
@@ -59,8 +56,6 @@ int key_task_permission(const key_ref_t key_ref, const struct cred *cred,
 			goto use_these_perms;
 		}
 	}
-
-use_other_perms:
 
 	/* otherwise use the least-significant 8-bits */
 	kperm = key->perm;
@@ -91,33 +86,25 @@ EXPORT_SYMBOL(key_task_permission);
  * key is invalidated, -EKEYREVOKED if the key's type has been removed or if
  * the key has been revoked or -EKEYEXPIRED if the key has expired.
  */
-int key_validate(struct key *key)
+int key_validate(const struct key *key)
 {
-	struct timespec now;
 	unsigned long flags = key->flags;
-	int ret = 0;
 
-	if (key) {
-		ret = -ENOKEY;
-		if (flags & (1 << KEY_FLAG_INVALIDATED))
-			goto error;
+	if (flags & (1 << KEY_FLAG_INVALIDATED))
+		return -ENOKEY;
 
-		/* check it's still accessible */
-		ret = -EKEYREVOKED;
-		if (flags & ((1 << KEY_FLAG_REVOKED) |
-			     (1 << KEY_FLAG_DEAD)))
-			goto error;
+	/* check it's still accessible */
+	if (flags & ((1 << KEY_FLAG_REVOKED) |
+		     (1 << KEY_FLAG_DEAD)))
+		return -EKEYREVOKED;
 
-		/* check it hasn't expired */
-		ret = 0;
-		if (key->expiry) {
-			now = current_kernel_time();
-			if (now.tv_sec >= key->expiry)
-				ret = -EKEYEXPIRED;
-		}
+	/* check it hasn't expired */
+	if (key->expiry) {
+		struct timespec now = current_kernel_time();
+		if (now.tv_sec >= key->expiry)
+			return -EKEYEXPIRED;
 	}
 
-error:
-	return ret;
+	return 0;
 }
 EXPORT_SYMBOL(key_validate);

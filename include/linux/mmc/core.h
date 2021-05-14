@@ -123,6 +123,7 @@ struct mmc_data {
 	s32			host_cookie;	/* host private data */
 };
 
+struct mmc_host;
 struct mmc_request {
 	struct mmc_command	*sbc;		/* SET_BLOCK_COUNT for multiblock */
 	struct mmc_command	*cmd;
@@ -131,15 +132,14 @@ struct mmc_request {
 
 	struct completion	completion;
 	void			(*done)(struct mmc_request *);/* completion function */
+	struct mmc_host		*host;
 };
 
-struct mmc_host;
 struct mmc_card;
 struct mmc_async_req;
 
-extern int mmc_interrupt_bkops(struct mmc_card *);
+extern int mmc_stop_bkops(struct mmc_card *);
 extern int mmc_read_bkops_status(struct mmc_card *);
-extern int mmc_is_exception_event(struct mmc_card *, unsigned int);
 extern struct mmc_async_req *mmc_start_req(struct mmc_host *,
 					   struct mmc_async_req *, int *);
 extern int mmc_interrupt_hpi(struct mmc_card *);
@@ -148,6 +148,8 @@ extern int mmc_wait_for_cmd(struct mmc_host *, struct mmc_command *, int);
 extern int mmc_app_cmd(struct mmc_host *, struct mmc_card *);
 extern int mmc_wait_for_app_cmd(struct mmc_host *, struct mmc_card *,
 	struct mmc_command *, int);
+extern void mmc_start_bkops(struct mmc_card *card, bool from_exception);
+extern int __mmc_switch(struct mmc_card *, u8, u8, u8, unsigned int, bool);
 extern int mmc_switch(struct mmc_card *, u8, u8, u8, unsigned int);
 extern int mmc_send_ext_csd(struct mmc_card *card, u8 *ext_csd);
 
@@ -168,13 +170,13 @@ extern int mmc_can_trim(struct mmc_card *card);
 extern int mmc_can_discard(struct mmc_card *card);
 extern int mmc_can_sanitize(struct mmc_card *card);
 extern int mmc_can_secure_erase_trim(struct mmc_card *card);
-extern int mmc_can_poweroff_notify(const struct mmc_card *card);
 extern int mmc_erase_group_aligned(struct mmc_card *card, unsigned int from,
 				   unsigned int nr);
-extern void mmc_start_bkops(struct mmc_card *card);
 extern unsigned int mmc_calc_max_discard(struct mmc_card *card);
 
 extern int mmc_set_blocklen(struct mmc_card *card, unsigned int blocklen);
+extern int mmc_set_blockcount(struct mmc_card *card, unsigned int blockcount,
+			      bool is_rel_write);
 extern int mmc_hw_reset(struct mmc_host *host);
 extern int mmc_hw_reset_check(struct mmc_host *host);
 extern int mmc_can_reset(struct mmc_card *card);
@@ -185,9 +187,6 @@ extern unsigned int mmc_align_data_size(struct mmc_card *, unsigned int);
 extern int __mmc_claim_host(struct mmc_host *host, atomic_t *abort);
 extern void mmc_release_host(struct mmc_host *host);
 extern int mmc_try_claim_host(struct mmc_host *host);
-extern void mmc_set_ios(struct mmc_host *host);
-extern int mmc_detect_card_removed(struct mmc_host *host);
-extern int mmc_flush_cache(struct mmc_card *);
 
 extern int mmc_flush_cache(struct mmc_card *);
 

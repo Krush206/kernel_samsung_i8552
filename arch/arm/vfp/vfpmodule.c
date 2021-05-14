@@ -20,7 +20,6 @@
 #include <linux/init.h>
 #include <linux/uaccess.h>
 #include <linux/user.h>
-#include <linux/proc_fs.h>
 
 #include <asm/cp15.h>
 #include <asm/cputype.h>
@@ -86,11 +85,6 @@ static void vfp_force_reload(unsigned int cpu, struct thread_info *thread)
 	thread->vfpstate.hard.cpu = NR_CPUS;
 #endif
 }
-
-/*
- * Used for reporting emulation statistics via /proc
- */
-static atomic64_t vfp_bounce_count = ATOMIC64_INIT(0);
 
 /*
  * Per-thread VFP initialization.
@@ -247,11 +241,11 @@ static void vfp_panic(char *reason, u32 inst)
 {
 	int i;
 
-	printk(KERN_ERR "VFP: Error: %s\n", reason);
-	printk(KERN_ERR "VFP: EXC 0x%08x SCR 0x%08x INST 0x%08x\n",
+	pr_err("VFP: Error: %s\n", reason);
+	pr_err("VFP: EXC 0x%08x SCR 0x%08x INST 0x%08x\n",
 		fmrx(FPEXC), fmrx(FPSCR), inst);
 	for (i = 0; i < 32; i += 2)
-		printk(KERN_ERR "VFP: s%2u: 0x%08x s%2u: 0x%08x\n",
+		pr_err("VFP: s%2u: 0x%08x s%2u: 0x%08x\n",
 		       i, vfp_get_float(i), i+1, vfp_get_float(i+1));
 }
 
@@ -343,7 +337,6 @@ void VFP_bounce(u32 trigger, u32 fpexc, struct pt_regs *regs)
 	u32 fpscr, orig_fpscr, fpsid, exceptions;
 
 	pr_debug("VFP: bounce: trigger %08x fpexc %08x\n", trigger, fpexc);
-	atomic64_inc(&vfp_bounce_count);
 
 	/*
 	 * At this point, FPEXC can have the following configuration:
@@ -420,7 +413,7 @@ void VFP_bounce(u32 trigger, u32 fpexc, struct pt_regs *regs)
 	 * If there isn't a second FP instruction, exit now. Note that
 	 * the FPEXC.FP2V bit is valid only if FPEXC.EX is 1.
 	 */
-	if (fpexc ^ (FPEXC_EX | FPEXC_FP2V))
+	if ((fpexc & (FPEXC_EX | FPEXC_FP2V)) != (FPEXC_EX | FPEXC_FP2V))
 		goto exit;
 
 	/*
@@ -452,14 +445,14 @@ static void vfp_enable(void *unused)
 }
 
 #ifdef CONFIG_CPU_PM
-int vfp_pm_suspend(void)
+static int vfp_pm_suspend(void)
 {
 	struct thread_info *ti = current_thread_info();
 	u32 fpexc = fmrx(FPEXC);
 
 	/* if vfp is on, then save state for resumption */
 	if (fpexc & FPEXC_EN) {
-		printk(KERN_DEBUG "%s: saving vfp state\n", __func__);
+		pr_debug("%s: saving vfp state\n", __func__);
 		vfp_save_state(&ti->vfpstate, fpexc);
 
 		/* disable, just in case */
@@ -478,7 +471,7 @@ int vfp_pm_suspend(void)
 	return 0;
 }
 
-void vfp_pm_resume(void)
+static void vfp_pm_resume(void)
 {
 	/* ensure we have access to the vfp */
 	vfp_enable(NULL);
@@ -634,26 +627,6 @@ int vfp_restore_user_hwstate(struct user_vfp __user *ufp,
 	return err ? -EFAULT : 0;
 }
 
-void vfp_kmode_exception(void)
-{
-	/*
-	 * If we reach this point, a floating point exception has been raised
-	 * while running in kernel mode. If the NEON/VFP unit was enabled at the
-	 * time, it means a VFP instruction has been issued that requires
-	 * software assistance to complete, something which is not currently
-	 * supported in kernel mode.
-	 * If the NEON/VFP unit was disabled, and the location pointed to below
-	 * is properly preceded by a call to kernel_neon_begin(), something has
-	 * caused the task to be scheduled out and back in again. In this case,
-	 * rebuilding and running with CONFIG_DEBUG_ATOMIC_SLEEP enabled should
-	 * be helpful in localizing the problem.
-	 */
-	if (fmrx(FPEXC) & FPEXC_EN)
-		pr_crit("BUG: unsupported FP instruction in kernel mode\n");
-	else
-		pr_crit("BUG: FP instruction issued in kernel mode with FP unit disabled\n");
-}
-
 /*
  * VFP hardware can lose all context when a CPU goes offline.
  * As we will be running in SMP mode with CPU hotplug, we will save the
@@ -675,26 +648,6 @@ static int vfp_hotplug(struct notifier_block *b, unsigned long action,
 	return NOTIFY_OK;
 }
 
-#ifdef CONFIG_PROC_FS
-static int proc_read_status(char *page, char **start, off_t off, int count,
-			    int *eof, void *data)
-{
-	char *p = page;
-	int len;
-
-	p += snprintf(p, PAGE_SIZE, "%llu\n", atomic64_read(&vfp_bounce_count));
-
-	len = (p - page) - off;
-	if (len < 0)
-		len = 0;
-
-	*eof = (len <= count) ? 1 : 0;
-	*start = page + off;
-
-	return len;
-}
-#endif
-
 /*
  * VFP support code initialisation.
  */
@@ -702,9 +655,7 @@ static int __init vfp_init(void)
 {
 	unsigned int vfpsid;
 	unsigned int cpu_arch = cpu_architecture();
-#ifdef CONFIG_PROC_FS
-	static struct proc_dir_entry *procfs_entry;
-#endif
+
 	if (cpu_arch >= CPU_ARCH_ARMv6)
 		on_each_cpu(vfp_enable, NULL, 1);
 
@@ -719,16 +670,16 @@ static int __init vfp_init(void)
 	barrier();
 	vfp_vector = vfp_null_entry;
 
-	printk(KERN_INFO "VFP support v0.3: ");
+	pr_info("VFP support v0.3: ");
 	if (VFP_arch)
-		printk("not present\n");
+		pr_cont("not present\n");
 	else if (vfpsid & FPSID_NODOUBLE) {
-		printk("no double precision support\n");
+		pr_cont("no double precision support\n");
 	} else {
 		hotcpu_notifier(vfp_hotplug, 0);
 
 		VFP_arch = (vfpsid & FPSID_ARCH_MASK) >> FPSID_ARCH_BIT;  /* Extract the architecture version */
-		printk("implementor %02x architecture %d part %02x variant %x rev %x\n",
+		pr_cont("implementor %02x architecture %d part %02x variant %x rev %x\n",
 			(vfpsid & FPSID_IMPLEMENTER_MASK) >> FPSID_IMPLEMENTER_BIT,
 			(vfpsid & FPSID_ARCH_MASK) >> FPSID_ARCH_BIT,
 			(vfpsid & FPSID_PART_MASK) >> FPSID_PART_BIT,
@@ -750,11 +701,14 @@ static int __init vfp_init(void)
 			elf_hwcap |= HWCAP_VFPv3;
 
 			/*
-			 * Check for VFPv3 D16. CPUs in this configuration
-			 * only have 16 x 64bit registers.
+			 * Check for VFPv3 D16 and VFPv4 D16.  CPUs in
+			 * this configuration only have 16 x 64bit
+			 * registers.
 			 */
 			if (((fmrx(MVFR0) & MVFR0_A_SIMD_MASK)) == 1)
-				elf_hwcap |= HWCAP_VFPv3D16;
+				elf_hwcap |= HWCAP_VFPv3D16; /* also v4-D16 */
+			else
+				elf_hwcap |= HWCAP_VFPD32;
 		}
 #endif
 		/*
@@ -768,22 +722,13 @@ static int __init vfp_init(void)
 			if ((fmrx(MVFR1) & 0x000fff00) == 0x00011100)
 				elf_hwcap |= HWCAP_NEON;
 #endif
-			if ((fmrx(MVFR1) & 0xf0000000) == 0x10000000 ||
-			    (read_cpuid_id() & 0xff00fc00) == 0x51000400)
+#ifdef CONFIG_VFPv3
+			if ((fmrx(MVFR1) & 0xf0000000) == 0x10000000)
 				elf_hwcap |= HWCAP_VFPv4;
+#endif
 		}
 	}
-
-#ifdef CONFIG_PROC_FS
-	procfs_entry = create_proc_entry("cpu/vfp_bounce", S_IRUGO, NULL);
-
-	if (procfs_entry)
-		procfs_entry->read_proc = proc_read_status;
-	else
-		pr_err("Failed to create procfs node for VFP bounce reporting\n");
-#endif
-
 	return 0;
 }
 
-core_initcall(vfp_init);
+late_initcall(vfp_init);

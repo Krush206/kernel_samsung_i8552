@@ -22,28 +22,17 @@
 #include <linux/sysrq.h>
 #include <linux/init.h>
 #include <linux/nmi.h>
-#include <linux/dmi.h>
-#include <asm/cacheflush.h>
-#ifdef CONFIG_SEC_DEBUG
-#include <linux/sec_debug.h>
-#endif
 
 #define PANIC_TIMER_STEP 100
 #define PANIC_BLINK_SPD 18
 
-/* Machine specific panic information string */
-char *mach_panic_string;
-
-int panic_on_oops;
+int panic_on_oops = CONFIG_PANIC_ON_OOPS_VALUE;
 static unsigned long tainted_mask;
 static int pause_on_oops;
 static int pause_on_oops_flag;
 static DEFINE_SPINLOCK(pause_on_oops_lock);
 
-#ifndef CONFIG_PANIC_TIMEOUT
-#define CONFIG_PANIC_TIMEOUT 0
-#endif
-int panic_timeout = CONFIG_PANIC_TIMEOUT;
+int panic_timeout;
 EXPORT_SYMBOL_GPL(panic_timeout);
 
 ATOMIC_NOTIFIER_HEAD(panic_notifier_list);
@@ -59,15 +48,6 @@ static long no_blink(int state)
 long (*panic_blink)(int state);
 EXPORT_SYMBOL(panic_blink);
 
-#if defined(CONFIG_MACH_ARUBA_OPEN) || defined(CONFIG_MACH_ARUBASLIM_OPEN) || defined(CONFIG_MACH_ARUBA_CTC) || \
-	defined(CONFIG_MACH_ROY) || defined(CONFIG_MACH_KYLEPLUS_CTC) || defined(CONFIG_MACH_DELOS_OPEN) || \
-	defined(CONFIG_MACH_DELOS_CTC) || defined(CONFIG_MACH_HENNESSY_DUOS_CTC)
-#include "../arch/arm/mach-msm/smd_private.h"
-#include "../arch/arm/mach-msm/proc_comm.h"
-#include <mach/msm_iomap-7xxx.h>
-#include <mach/msm_iomap.h>
-#include <asm/io.h>
-#endif
 /*
  * Stop ourself in panic -- architecture code may override this
  */
@@ -85,13 +65,6 @@ void __weak panic_smp_self_stop(void)
  *
  *	This function never returns.
  */
-
-#ifdef CONFIG_APPLY_GA_SOLUTION
-extern void dump_all_task_info(void);
-extern void dump_cpu_stat(void);
-#endif
-
-
 void panic(const char *fmt, ...)
 {
 	static DEFINE_SPINLOCK(panic_lock);
@@ -99,19 +72,6 @@ void panic(const char *fmt, ...)
 	va_list args;
 	long i, i_next = 0;
 	int state = 0;
-#if defined(CONFIG_SEC_DEBUG)
-	unsigned size;
-	samsung_vendor1_id *smem_vendor1 = (samsung_vendor1_id *) \
-			smem_get_entry(SMEM_ID_VENDOR1, &size);
-#endif
-
-//ignore panic withing 1sec	
-#if defined(CONFIG_MACH_ARUBA_OPEN) ||  defined(CONFIG_MACH_ARUBA_CTC) || \
-	defined(CONFIG_MACH_KYLEPLUS_OPEN) || defined(CONFIG_MACH_DELOS_OPEN) || \
-	defined(CONFIG_MACH_DELOS_CTC)
-	unsigned long long time;
-	time = cpu_clock(smp_processor_id());
-#endif
 
 	/*
 	 * Disable local interrupts. This will prevent panic_smp_self_stop
@@ -134,10 +94,6 @@ void panic(const char *fmt, ...)
 	if (!spin_trylock(&panic_lock))
 		panic_smp_self_stop();
 
-#if defined(CONFIG_SEC_DEBUG) && defined (CONFIG_SEC_DEBUG_SCHED_LOG)
-	secdbg_sched_msg("!!panic!!");
-#endif
-
 	console_verbose();
 	bust_spinlocks(1);
 	va_start(args, fmt);
@@ -151,70 +107,7 @@ void panic(const char *fmt, ...)
 	if (!test_taint(TAINT_DIE) && oops_in_progress <= 1)
 		dump_stack();
 #endif
-//printk(KERN_EMERG "%s, %d\n",__func__, __LINE__);
-#if defined(CONFIG_SEC_DEBUG)
-	do {
-		extern void sec_save_final_context(void);
-		sec_save_final_context();
-	} while (0);
-#endif
 
-#ifdef CONFIG_SEC_DEBUG_SUBSYS
-	sec_debug_save_panic_info(buf,
-		(unsigned int)__builtin_return_address(0));
-#endif
-
-#ifdef CONFIG_APPLY_GA_SOLUTION
-	dump_all_task_info();
-	//dump_cpu_stat();	double fault is occurred if you call this function !
-#endif
-
-//printk(KERN_EMERG "%s, %d\n",__func__, __LINE__);
-#if defined(CONFIG_SEC_DEBUG)
-//printk(KERN_EMERG "%s, %d\n",__func__, __LINE__);
-//	smem_vendor1->ram_dump_level = 1; //TEMP ckid.chae
-	if (smem_vendor1 && smem_vendor1->ram_dump_level) {
-#if defined(CONFIG_MACH_ARUBA_OPEN) ||  defined(CONFIG_MACH_ARUBA_CTC) || \
-	defined(CONFIG_MACH_KYLEPLUS_OPEN) || defined(CONFIG_MACH_DELOS_OPEN) || \
-	defined(CONFIG_MACH_DELOS_CTC)
-		if((smem_vendor1->ram_dump_level==1)&&(time < 2000000000))
-			smem_vendor1->silent_reset = 0xFAFAFAFA;
-		else
-			writel_relaxed(0xCCCC, MSM_SHARED_RAM_BASE + 0x30);
-#else	
-		writel_relaxed(0xCCCC, MSM_SHARED_RAM_BASE + 0x30);
-#endif
-	} else if (smem_vendor1 != NULL) {
-			smem_vendor1->silent_reset = 0xAEAEAEAE;
-	} else {
-			printk(KERN_EMERG "smem_vendor1 is NULL\n");
-	}
-
-	if (strncmp(buf, "[Crash Key]", 11) == 0) {
-	  if (smem_vendor1 != NULL) {
-		memcpy(&(smem_vendor1->apps_dump.apps_string),\
-				"USER_FORCED_UPLOAD",\
-				sizeof("USER_FORCED_UPLOAD"));
-		} else {
-		  printk(KERN_EMERG "smem_vendor1 is NULL\n");
-		}
-         }
-         else
-		memcpy(&(smem_vendor1->apps_dump.apps_string),\
-				"Kernel panic",\
-				sizeof("Kernel panic"));
-
-	printk(KERN_EMERG "[PANIC] call msm_proc_comm_reset_modem_now func\n");
-#if defined(CONFIG_SEC_DEBUG) && defined (CONFIG_SEC_DEBUG_SCHED_LOG)
-	sec_debug_print_build_info();
-#endif
-
-	flush_cache_all();
-	outer_flush_all();
-//printk(KERN_EMERG "%s, %d\n",__func__, __LINE__);
-	msm_proc_comm_reset_modem_now();
-//printk(KERN_EMERG "%s, %d\n",__func__, __LINE__);
-#endif
 	/*
 	 * If we have crashed and we have a crash kernel loaded let it handle
 	 * everything else.
@@ -222,14 +115,14 @@ void panic(const char *fmt, ...)
 	 */
 	crash_kexec(NULL);
 
-	kmsg_dump(KMSG_DUMP_PANIC);
-
 	/*
 	 * Note smp_send_stop is the usual smp shutdown function, which
 	 * unfortunately means it may not be hardened to work in a panic
 	 * situation.
 	 */
 	smp_send_stop();
+
+	kmsg_dump(KMSG_DUMP_PANIC);
 
 	atomic_notifier_call_chain(&panic_notifier_list, 0, buf);
 
@@ -365,26 +258,19 @@ unsigned long get_taint(void)
 	return tainted_mask;
 }
 
-void add_taint(unsigned flag)
+/**
+ * add_taint: add a taint flag if not already set.
+ * @flag: one of the TAINT_* constants.
+ * @lockdep_ok: whether lock debugging is still OK.
+ *
+ * If something bad has gone wrong, you'll want @lockdebug_ok = false, but for
+ * some notewortht-but-not-corrupting cases, it can be set to true.
+ */
+void add_taint(unsigned flag, enum lockdep_ok lockdep_ok)
 {
-	/*
-	 * Can't trust the integrity of the kernel anymore.
-	 * We don't call directly debug_locks_off() because the issue
-	 * is not necessarily serious enough to set oops_in_progress to 1
-	 * Also we want to keep up lockdep for staging/out-of-tree
-	 * development and post-warning case.
-	 */
-	switch (flag) {
-	case TAINT_CRAP:
-	case TAINT_OOT_MODULE:
-	case TAINT_WARN:
-	case TAINT_FIRMWARE_WORKAROUND:
-		break;
-
-	default:
-		if (__debug_locks_off())
-			printk(KERN_WARNING "Disabling lock debugging due to kernel taint\n");
-	}
+	if (lockdep_ok == LOCKDEP_NOW_UNRELIABLE && __debug_locks_off())
+		printk(KERN_WARNING
+		       "Disabling lock debugging due to kernel taint\n");
 
 	set_bit(flag, &tainted_mask);
 }
@@ -489,11 +375,6 @@ late_initcall(init_oops_id);
 void print_oops_end_marker(void)
 {
 	init_oops_id();
-
-	if (mach_panic_string)
-		printk(KERN_WARNING "Board Information: %s\n",
-		       mach_panic_string);
-
 	printk(KERN_WARNING "---[ end trace %016llx ]---\n",
 		(unsigned long long)oops_id);
 }
@@ -518,13 +399,8 @@ struct slowpath_args {
 static void warn_slowpath_common(const char *file, int line, void *caller,
 				 unsigned taint, struct slowpath_args *args)
 {
-	const char *board;
-
 	printk(KERN_WARNING "------------[ cut here ]------------\n");
 	printk(KERN_WARNING "WARNING: at %s:%d %pS()\n", file, line, caller);
-	board = dmi_get_system_info(DMI_PRODUCT_NAME);
-	if (board)
-		printk(KERN_WARNING "Hardware name: %s\n", board);
 
 	if (args)
 		vprintk(args->fmt, args->args);
@@ -532,7 +408,8 @@ static void warn_slowpath_common(const char *file, int line, void *caller,
 	print_modules();
 	dump_stack();
 	print_oops_end_marker();
-	add_taint(taint);
+	/* Just a warning, don't kill lockdep. */
+	add_taint(taint, LOCKDEP_STILL_OK);
 }
 
 void warn_slowpath_fmt(const char *file, int line, const char *fmt, ...)

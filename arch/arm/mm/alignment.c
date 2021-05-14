@@ -745,11 +745,10 @@ do_alignment_t32_to_handler(unsigned long *pinstr, struct pt_regs *regs,
 static int
 do_alignment(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 {
-	union offset_union offset;
+	union offset_union uninitialized_var(offset);
 	unsigned long instr = 0, instrptr;
 	int (*handler)(unsigned long addr, unsigned long instr, struct pt_regs *regs);
 	unsigned int type;
-	mm_segment_t fs;
 	unsigned int fault;
 	u16 tinstr = 0;
 	int isize = 4;
@@ -760,16 +759,15 @@ do_alignment(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 
 	instrptr = instruction_pointer(regs);
 
-	fs = get_fs();
-	set_fs(KERNEL_DS);
 	if (thumb_mode(regs)) {
-		fault = __get_user(tinstr, (u16 *)(instrptr & ~1));
+		u16 *ptr = (u16 *)(instrptr & ~1);
+		fault = probe_kernel_address(ptr, tinstr);
 		if (!fault) {
 			if (cpu_architecture() >= CPU_ARCH_ARMv7 &&
 			    IS_T32(tinstr)) {
 				/* Thumb-2 32-bit */
 				u16 tinst2 = 0;
-				fault = __get_user(tinst2, (u16 *)(instrptr+2));
+				fault = probe_kernel_address(ptr + 1, tinst2);
 				instr = (tinstr << 16) | tinst2;
 				thumb2_32b = 1;
 			} else {
@@ -778,8 +776,7 @@ do_alignment(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 			}
 		}
 	} else
-		fault = __get_user(instr, (u32 *)instrptr);
-	set_fs(fs);
+		fault = probe_kernel_address(instrptr, instr);
 
 	if (fault) {
 		type = TYPE_FAULT;
@@ -794,7 +791,7 @@ do_alignment(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
  fixup:
 
 	regs->ARM_pc += isize;
-	offset.un = 0;
+
 	switch (CODING_BITS(instr)) {
 	case 0x00000000:	/* 3.13.4 load/store instruction extensions */
 		if (LDSTHD_I_BIT(instr))
@@ -853,10 +850,13 @@ do_alignment(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 		break;
 
 	case 0x08000000:	/* ldm or stm, or thumb-2 32bit instruction */
-		if (thumb2_32b)
+		if (thumb2_32b) {
+			offset.un = 0;
 			handler = do_alignment_t32_to_handler(&instr, regs, &offset);
-		else
+		} else {
+			offset.un = 0;
 			handler = do_alignment_ldmstm;
+		}
 		break;
 
 	default:
@@ -961,12 +961,14 @@ static int __init alignment_init(void)
 		return -ENOMEM;
 #endif
 
+#ifdef CONFIG_CPU_CP15
 	if (cpu_is_v6_unaligned()) {
 		cr_alignment &= ~CR_A;
 		cr_no_alignment &= ~CR_A;
 		set_cr(cr_alignment);
 		ai_usermode = safe_usermode(ai_usermode, false);
 	}
+#endif
 
 	hook_fault_code(FAULT_CODE_ALIGNMENT, do_alignment, SIGBUS, BUS_ADRALN,
 			"alignment exception");

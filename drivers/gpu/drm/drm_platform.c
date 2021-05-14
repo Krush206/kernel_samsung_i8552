@@ -3,7 +3,7 @@
  *
  * Copyright 2003 José Fonseca.
  * Copyright 2003 Leif Delgass.
- * Copyright (c) 2009, The Linux Foundation.
+ * Copyright (c) 2009, Code Aurora Forum.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -26,7 +26,7 @@
  */
 
 #include <linux/export.h>
-#include "drmP.h"
+#include <drm/drmP.h>
 
 /**
  * Register.
@@ -64,7 +64,6 @@ int drm_get_platform_dev(struct platform_device *platdev,
 	}
 
 	if (drm_core_check_feature(dev, DRIVER_MODESET)) {
-		dev_set_drvdata(&platdev->dev, dev);
 		ret = drm_get_minor(dev, &dev->control, DRM_MINOR_CONTROL);
 		if (ret)
 			goto err_g1;

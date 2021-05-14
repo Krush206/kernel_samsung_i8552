@@ -62,7 +62,7 @@ void key_schedule_gc(time_t gc_at)
 
 	if (gc_at <= now || test_bit(KEY_GC_REAP_KEYTYPE, &key_gc_flags)) {
 		kdebug("IMMEDIATE");
-		queue_work(system_nrt_wq, &key_gc_work);
+		schedule_work(&key_gc_work);
 	} else if (gc_at < key_gc_next_run) {
 		kdebug("DEFERRED");
 		key_gc_next_run = gc_at;
@@ -77,7 +77,7 @@ void key_schedule_gc(time_t gc_at)
 void key_schedule_gc_links(void)
 {
 	set_bit(KEY_GC_KEY_EXPIRED, &key_gc_flags);
-	queue_work(system_nrt_wq, &key_gc_work);
+	schedule_work(&key_gc_work);
 }
 
 /*
@@ -120,7 +120,7 @@ void key_gc_keytype(struct key_type *ktype)
 	set_bit(KEY_GC_REAP_KEYTYPE, &key_gc_flags);
 
 	kdebug("schedule");
-	queue_work(system_nrt_wq, &key_gc_work);
+	schedule_work(&key_gc_work);
 
 	kdebug("sleep");
 	wait_on_bit(&key_gc_flags, KEY_GC_REAPING_KEYTYPE, key_gc_wait_bit,
@@ -187,12 +187,6 @@ static noinline void key_gc_unused_keys(struct list_head *keys)
 		kdebug("- %u", key->serial);
 		key_check(key);
 
-		/* Throw away the key data if the key is instantiated */
-		if (test_bit(KEY_FLAG_INSTANTIATED, &key->flags) &&
-		    !test_bit(KEY_FLAG_NEGATIVE, &key->flags) &&
-		    key->type->destroy)
-			key->type->destroy(key);
-
 		security_key_free(key);
 
 		/* deal with the user's key tracking and quota */
@@ -208,6 +202,10 @@ static noinline void key_gc_unused_keys(struct list_head *keys)
 			atomic_dec(&key->user->nikeys);
 
 		key_user_put(key->user);
+
+		/* now throw away the key memory */
+		if (key->type->destroy)
+			key->type->destroy(key);
 
 		kfree(key->description);
 
@@ -371,7 +369,7 @@ maybe_resched:
 	}
 
 	if (gc_state & KEY_GC_REAP_AGAIN)
-		queue_work(system_nrt_wq, &key_gc_work);
+		schedule_work(&key_gc_work);
 	kleave(" [end %x]", gc_state);
 	return;
 

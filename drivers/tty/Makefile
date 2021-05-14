@@ -1,4 +1,4 @@
-obj-y				+= tty_io.o n_tty.o tty_ioctl.o tty_ldisc.o \
+obj-$(CONFIG_TTY)		+= tty_io.o n_tty.o tty_ioctl.o tty_ldisc.o \
 				   tty_buffer.o tty_port.o tty_mutex.o
 obj-$(CONFIG_LEGACY_PTYS)	+= pty.o
 obj-$(CONFIG_UNIX98_PTYS)	+= pty.o
@@ -6,9 +6,6 @@ obj-$(CONFIG_AUDIT)		+= tty_audit.o
 obj-$(CONFIG_MAGIC_SYSRQ)	+= sysrq.o
 obj-$(CONFIG_N_HDLC)		+= n_hdlc.o
 obj-$(CONFIG_N_GSM)		+= n_gsm.o
-obj-$(CONFIG_N_SMUX)		+= n_smux.o
-obj-$(CONFIG_N_SMUX_LOOPBACK)	+= smux_test.o smux_loopback.o
-obj-$(CONFIG_SMUX_CTL)		+= smux_ctl.o
 obj-$(CONFIG_TRACE_ROUTER)	+= n_tracerouter.o
 obj-$(CONFIG_TRACE_SINK)	+= n_tracesink.o
 obj-$(CONFIG_R3964)		+= n_r3964.o
@@ -30,5 +27,7 @@ obj-$(CONFIG_SYNCLINK_GT)	+= synclink_gt.o
 obj-$(CONFIG_SYNCLINKMP)	+= synclinkmp.o
 obj-$(CONFIG_SYNCLINK)		+= synclink.o
 obj-$(CONFIG_PPC_EPAPR_HV_BYTECHAN) += ehv_bytechan.o
+obj-$(CONFIG_GOLDFISH_TTY)	+= goldfish.o
+obj-$(CONFIG_DA_TTY)		+= metag_da.o
 
 obj-y += ipwireless/

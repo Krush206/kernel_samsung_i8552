@@ -59,7 +59,7 @@ static DEFINE_MUTEX(misc_mtx);
 /*
  * Assigned numbers, used for dynamic minors
  */
-#define DYNAMIC_MINORS 128 /* like dynamic majors */
+#define DYNAMIC_MINORS 64 /* like dynamic majors */
 static DECLARE_BITMAP(misc_minors, DYNAMIC_MINORS);
 
 #ifdef CONFIG_PROC_FS
@@ -183,19 +183,12 @@ static const struct file_operations misc_fops = {
  
 int misc_register(struct miscdevice * misc)
 {
-	struct miscdevice *c;
 	dev_t dev;
 	int err = 0;
 
 	INIT_LIST_HEAD(&misc->list);
 
 	mutex_lock(&misc_mtx);
-	list_for_each_entry(c, &misc_list, list) {
-		if (c->minor == misc->minor) {
-			mutex_unlock(&misc_mtx);
-			return -EBUSY;
-		}
-	}
 
 	if (misc->minor == MISC_DYNAMIC_MINOR) {
 		int i = find_first_zero_bit(misc_minors, DYNAMIC_MINORS);
@@ -205,6 +198,15 @@ int misc_register(struct miscdevice * misc)
 		}
 		misc->minor = DYNAMIC_MINORS - i - 1;
 		set_bit(i, misc_minors);
+	} else {
+		struct miscdevice *c;
+
+		list_for_each_entry(c, &misc_list, list) {
+			if (c->minor == misc->minor) {
+				mutex_unlock(&misc_mtx);
+				return -EBUSY;
+			}
+		}
 	}
 
 	dev = MKDEV(MISC_MAJOR, misc->minor);

@@ -29,15 +29,6 @@
 #include <net/sock.h>
 #include <linux/seq_file.h>
 
-#ifdef CONFIG_BT_CSR_7820
-#include "../../../arch/arm/mach-msm/board-msm7627a.h"
-#endif
-
-#ifdef CONFIG_BT_CSR_7820
-#define WLAN_33V_CONTROL_FOR_BT_ANTENNA
-extern void bluetooth_setup_ldo_33v(int on);
-#endif
-
 #ifndef AF_BLUETOOTH
 #define AF_BLUETOOTH	31
 #define PF_BLUETOOTH	AF_BLUETOOTH
@@ -74,7 +65,6 @@ struct bt_security {
 #define BT_SECURITY_LOW		1
 #define BT_SECURITY_MEDIUM	2
 #define BT_SECURITY_HIGH	3
-#define BT_SECURITY_FIPS	4
 
 #define BT_DEFER_SETUP	7
 
@@ -117,21 +107,10 @@ struct bt_power {
  */
 #define BT_CHANNEL_POLICY_AMP_PREFERRED		2
 
-#define BT_VOICE		11
-struct bt_voice {
-	__u16 setting;
-};
-
-#define BT_VOICE_TRANSPARENT			0x0003
-#define BT_VOICE_CVSD_16BIT			0x0060
-
-#define BT_SNDMTU		12
-#define BT_RCVMTU		13
-
 __printf(1, 2)
-void bt_info(const char *fmt, ...);
+int bt_info(const char *fmt, ...);
 __printf(1, 2)
-void bt_err(const char *fmt, ...);
+int bt_err(const char *fmt, ...);
 
 #define BT_INFO(fmt, ...)	bt_info(fmt "\n", ##__VA_ARGS__)
 #define BT_ERR(fmt, ...)	bt_err(fmt "\n", ##__VA_ARGS__)
@@ -210,8 +189,8 @@ static inline bool bdaddr_type_is_le(__u8 type)
 	return false;
 }
 
-#define BDADDR_ANY  (&(bdaddr_t) {{0, 0, 0, 0, 0, 0}})
-#define BDADDR_NONE (&(bdaddr_t) {{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}})
+#define BDADDR_ANY   (&(bdaddr_t) {{0, 0, 0, 0, 0, 0} })
+#define BDADDR_LOCAL (&(bdaddr_t) {{0, 0, 0, 0xff, 0xff, 0xff} })
 
 /* Copy, swap, convert BD Address */
 static inline int bacmp(const bdaddr_t *ba1, const bdaddr_t *ba2)
@@ -231,10 +210,11 @@ void baswap(bdaddr_t *dst, bdaddr_t *src);
 
 struct bt_sock {
 	struct sock sk;
+	bdaddr_t    src;
+	bdaddr_t    dst;
 	struct list_head accept_q;
 	struct sock *parent;
 	unsigned long flags;
-	void (*skb_msg_name)(struct sk_buff *, void *, int *);
 };
 
 enum {
@@ -261,7 +241,6 @@ int  bt_sock_stream_recvmsg(struct kiocb *iocb, struct socket *sock,
 uint bt_sock_poll(struct file *file, struct socket *sock, poll_table *wait);
 int  bt_sock_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg);
 int  bt_sock_wait_state(struct sock *sk, int state, unsigned long timeo);
-int  bt_sock_wait_ready(struct sock *sk, unsigned long flags);
 
 void bt_accept_enqueue(struct sock *parent, struct sock *sk);
 void bt_accept_unlink(struct sock *sk);
@@ -269,15 +248,15 @@ struct sock *bt_accept_dequeue(struct sock *parent, struct socket *newsock);
 
 /* Skb helpers */
 struct l2cap_ctrl {
-	__u8	sframe:1,
-		poll:1,
-		final:1,
-		fcs:1,
-		sar:2,
-		super:2;
-	__u16	reqseq;
-	__u16	txseq;
-	__u8	retries;
+	unsigned int	sframe:1,
+			poll:1,
+			final:1,
+			fcs:1,
+			sar:2,
+			super:2;
+	__u16		reqseq;
+	__u16		txseq;
+	__u8		retries;
 };
 
 struct hci_dev;
@@ -293,14 +272,10 @@ struct hci_req_ctrl {
 struct bt_skb_cb {
 	__u8 pkt_type;
 	__u8 incoming;
-	__u16 opcode;
 	__u16 expect;
 	__u8 force_active;
-	struct l2cap_chan *chan;
 	struct l2cap_ctrl control;
 	struct hci_req_ctrl req;
-	bdaddr_t bdaddr;
-	__le16 psm;
 };
 #define bt_cb(skb) ((struct bt_skb_cb *)((skb)->cb))
 
@@ -348,16 +323,16 @@ out:
 
 int bt_to_errno(__u16 code);
 
-int hci_sock_init(void);
-void hci_sock_cleanup(void);
+extern int hci_sock_init(void);
+extern void hci_sock_cleanup(void);
 
-int bt_sysfs_init(void);
-void bt_sysfs_cleanup(void);
+extern int bt_sysfs_init(void);
+extern void bt_sysfs_cleanup(void);
 
-int bt_procfs_init(struct net *net, const char *name,
-		   struct bt_sock_list *sk_list,
-		   int (*seq_show)(struct seq_file *, void *));
-void bt_procfs_cleanup(struct net *net, const char *name);
+extern int  bt_procfs_init(struct net *net, const char *name,
+			   struct bt_sock_list* sk_list,
+			   int (* seq_show)(struct seq_file *, void *));
+extern void bt_procfs_cleanup(struct net *net, const char *name);
 
 extern struct dentry *bt_debugfs;
 
@@ -369,11 +344,4 @@ void sco_exit(void);
 
 void bt_sock_reclassify_lock(struct sock *sk, int proto);
 
-// @daniel, from backport-include/linux/netdevice.h
-#define alloc_netdev_mqs1(sizeof_priv, name, name_assign_type, setup, txqs, rxqs) \
-	alloc_netdev_mqs(sizeof_priv, name, setup, txqs, rxqs)
-
-#define alloc_netdev1(sizeof_priv, name, name_assign_type, setup) \
-	alloc_netdev_mqs1(sizeof_priv, name, name_assign_type, setup, 1, 1)
-// @
 #endif /* __BLUETOOTH_H */

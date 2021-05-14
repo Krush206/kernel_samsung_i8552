@@ -223,20 +223,6 @@ SMC_outw(u16 val, void __iomem *ioaddr, int reg)
 #define SMC_outsl(a, r, p, l)	writesl((a) + (r), p, l)
 #define SMC_IRQ_FLAGS		(-1)	/* from resource */
 
-#elif defined(CONFIG_ARCH_MSM)
-
-#define SMC_CAN_USE_8BIT	0
-#define SMC_CAN_USE_16BIT	1
-#define SMC_CAN_USE_32BIT	0
-#define SMC_NOWAIT		1
-
-#define SMC_inw(a, r)		readw((a) + (r))
-#define SMC_outw(v, a, r)	writew(v, (a) + (r))
-#define SMC_insw(a, r, p, l)	readsw((a) + (r), p, l)
-#define SMC_outsw(a, r, p, l)	writesw((a) + (r), p, l)
-
-#define SMC_IRQ_FLAGS		IRQF_TRIGGER_HIGH
-
 #elif defined(CONFIG_MN10300)
 
 /*
@@ -300,16 +286,16 @@ static inline void mcf_outsw(void *a, unsigned char *p, int l)
 
 #define SMC_IO_SHIFT		(lp->io_shift)
 
-#define SMC_inb(a, r)		readb((a) + (r))
-#define SMC_inw(a, r)		readw((a) + (r))
-#define SMC_inl(a, r)		readl((a) + (r))
-#define SMC_outb(v, a, r)	writeb(v, (a) + (r))
-#define SMC_outw(v, a, r)	writew(v, (a) + (r))
-#define SMC_outl(v, a, r)	writel(v, (a) + (r))
-#define SMC_insw(a, r, p, l)	readsw((a) + (r), p, l)
-#define SMC_outsw(a, r, p, l)	writesw((a) + (r), p, l)
-#define SMC_insl(a, r, p, l)	readsl((a) + (r), p, l)
-#define SMC_outsl(a, r, p, l)	writesl((a) + (r), p, l)
+#define SMC_inb(a, r)		ioread8((a) + (r))
+#define SMC_inw(a, r)		ioread16((a) + (r))
+#define SMC_inl(a, r)		ioread32((a) + (r))
+#define SMC_outb(v, a, r)	iowrite8(v, (a) + (r))
+#define SMC_outw(v, a, r)	iowrite16(v, (a) + (r))
+#define SMC_outl(v, a, r)	iowrite32(v, (a) + (r))
+#define SMC_insw(a, r, p, l)	ioread16_rep((a) + (r), p, l)
+#define SMC_outsw(a, r, p, l)	iowrite16_rep((a) + (r), p, l)
+#define SMC_insl(a, r, p, l)	ioread32_rep((a) + (r), p, l)
+#define SMC_outsl(a, r, p, l)	iowrite32_rep((a) + (r), p, l)
 
 #define RPC_LSA_DEFAULT		RPC_LED_100_10
 #define RPC_LSB_DEFAULT		RPC_LED_TX_RX

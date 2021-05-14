@@ -66,7 +66,7 @@ void aa_info_message(const char *str)
 	if (audit_enabled) {
 		struct common_audit_data sa;
 		struct apparmor_audit_data aad = {0,};
-		COMMON_AUDIT_DATA_INIT(&sa, NONE);
+		sa.type = LSM_AUDIT_DATA_NONE;
 		sa.aad = &aad;
 		aad.info = str;
 		aa_audit_msg(AUDIT_APPARMOR_STATUS, &sa, NULL);
@@ -104,3 +104,34 @@ void *kvmalloc(size_t size)
 	return buffer;
 }
 
+/**
+ * do_vfree - workqueue routine for freeing vmalloced memory
+ * @work: data to be freed
+ *
+ * The work_struct is overlaid to the data being freed, as at the point
+ * the work is scheduled the data is no longer valid, be its freeing
+ * needs to be delayed until safe.
+ */
+static void do_vfree(struct work_struct *work)
+{
+	vfree(work);
+}
+
+/**
+ * kvfree - free an allocation do by kvmalloc
+ * @buffer: buffer to free (MAYBE_NULL)
+ *
+ * Free a buffer allocated by kvmalloc
+ */
+void kvfree(void *buffer)
+{
+	if (is_vmalloc_addr(buffer)) {
+		/* Data is no longer valid so just use the allocated space
+		 * as the work_struct
+		 */
+		struct work_struct *work = (struct work_struct *) buffer;
+		INIT_WORK(work, do_vfree);
+		schedule_work(work);
+	} else
+		kfree(buffer);
+}

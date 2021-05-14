@@ -64,8 +64,6 @@ struct mtd_part_parser_data {
 };
 
 
-void part_fill_badblockstats(struct mtd_info *mtd);
-
 /*
  * Functions dealing with the various ways of partitioning the space
  */
@@ -81,9 +79,10 @@ struct mtd_part_parser {
 extern int register_mtd_parser(struct mtd_part_parser *parser);
 extern int deregister_mtd_parser(struct mtd_part_parser *parser);
 
-int mtd_is_partition(struct mtd_info *mtd);
+int mtd_is_partition(const struct mtd_info *mtd);
 int mtd_add_partition(struct mtd_info *master, char *name,
 		      long long offset, long long length);
 int mtd_del_partition(struct mtd_info *master, int partno);
+uint64_t mtd_get_device_size(const struct mtd_info *mtd);
 
 #endif

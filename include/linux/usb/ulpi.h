@@ -145,7 +145,6 @@
 #define ULPI_INT_SESS_VALID			(1 << 2)
 #define ULPI_INT_SESS_END			(1 << 3)
 #define ULPI_INT_IDGRD				(1 << 4)
-#define ULPI_INT_DP				(1 << 7)
 
 /* Debug */
 #define ULPI_DEBUG_LINESTATE0			(1 << 0)
@@ -182,8 +181,16 @@
 
 /*-------------------------------------------------------------------------*/
 
+#if IS_ENABLED(CONFIG_USB_ULPI)
 struct usb_phy *otg_ulpi_create(struct usb_phy_io_ops *ops,
 					unsigned int flags);
+#else
+static inline struct usb_phy *otg_ulpi_create(struct usb_phy_io_ops *ops,
+					      unsigned int flags)
+{
+	return NULL;
+}
+#endif
 
 #ifdef CONFIG_USB_ULPI_VIEWPORT
 /* access ops for controllers with a viewport register */
