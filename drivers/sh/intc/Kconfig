@@ -1,7 +1,3 @@
-config SH_INTC
-	def_bool y
-	select IRQ_DOMAIN
-
 comment "Interrupt controller options"
 
 config INTC_USERIMASK

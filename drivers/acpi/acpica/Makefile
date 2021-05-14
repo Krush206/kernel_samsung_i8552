@@ -31,7 +31,6 @@ acpi-y +=		\
 	evgpeinit.o	\
 	evgpeutil.o	\
 	evglock.o	\
-	evhandler.o	\
 	evmisc.o	\
 	evregion.o	\
 	evrgnini.o	\
@@ -83,7 +82,6 @@ acpi-$(ACPI_FUTURE_USAGE) += hwtimer.o
 acpi-y +=		\
 	nsaccess.o	\
 	nsalloc.o	\
-	nsconvert.o	\
 	nsdump.o	\
 	nseval.o	\
 	nsinit.o	\
@@ -92,7 +90,6 @@ acpi-y +=		\
 	nsobject.o	\
 	nsparse.o	\
 	nspredef.o	\
-	nsprepkg.o	\
 	nsrepair.o	\
 	nsrepair2.o	\
 	nssearch.o	\
@@ -107,9 +104,7 @@ acpi-$(ACPI_FUTURE_USAGE) += nsdumpdv.o
 acpi-y +=		\
 	psargs.o	\
 	psloop.o	\
-	psobject.o	\
 	psopcode.o	\
-	psopinfo.o	\
 	psparse.o	\
 	psscope.o	\
 	pstree.o	\
@@ -131,7 +126,7 @@ acpi-y +=		\
 	rsutils.o	\
 	rsxface.o
 
-acpi-$(ACPI_FUTURE_USAGE) += rsdump.o rsdumpinfo.o
+acpi-$(ACPI_FUTURE_USAGE) += rsdump.o
 
 acpi-y +=		\
 	tbfadt.o	\
@@ -139,14 +134,12 @@ acpi-y +=		\
 	tbinstal.o	\
 	tbutils.o	\
 	tbxface.o	\
-	tbxfload.o	\
 	tbxfroot.o
 
 acpi-y +=		\
 	utaddress.o	\
 	utalloc.o	\
 	utcopy.o	\
-	utexcep.o	\
 	utdebug.o	\
 	utdecode.o	\
 	utdelete.o	\
@@ -160,15 +153,8 @@ acpi-y +=		\
 	utmutex.o	\
 	utobject.o	\
 	utosi.o		\
-	utownerid.o	\
-	utpredef.o	\
 	utresrc.o	\
 	utstate.o	\
-	utstring.o	\
 	utxface.o	\
-	utxfinit.o	\
 	utxferror.o	\
 	utxfmutex.o
-
-acpi-$(ACPI_FUTURE_USAGE) += uttrack.o utcache.o
-

@@ -19,3 +19,5 @@
 obj-y += asic-calliope.o asic-cronus.o asic-gaia.o asic-zeus.o \
 	asic_devices.o asic_int.o irq_asic.o prealloc-calliope.o \
 	prealloc-cronus.o prealloc-cronuslite.o prealloc-gaia.o prealloc-zeus.o
+
+ccflags-y := -Wall -Werror

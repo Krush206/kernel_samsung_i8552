@@ -51,9 +51,8 @@ config ASYNC_TX_ENABLE_CHANNEL_SWITCH
 
 config AMBA_PL08X
 	bool "ARM PrimeCell PL080 or PL081 support"
-	depends on ARM_AMBA
+	depends on ARM_AMBA && EXPERIMENTAL
 	select DMA_ENGINE
-	select DMA_VIRTUAL_CHANNELS
 	help
 	  Platform has a PL08x DMAC device
 	  which can provide DMA engine support
@@ -63,6 +62,8 @@ config INTEL_IOATDMA
 	depends on PCI && X86
 	select DMA_ENGINE
 	select DCA
+	select ASYNC_TX_DISABLE_PQ_VAL_DMA
+	select ASYNC_TX_DISABLE_XOR_VAL_DMA
 	help
 	  Enable support for the Intel(R) I/OAT DMA engine present
 	  in recent Intel Xeon chipsets.
@@ -81,23 +82,12 @@ config INTEL_IOP_ADMA
 
 config DW_DMAC
 	tristate "Synopsys DesignWare AHB DMA support"
-	depends on GENERIC_HARDIRQS
+	depends on HAVE_CLK
 	select DMA_ENGINE
 	default y if CPU_AT32AP7000
 	help
 	  Support the Synopsys DesignWare AHB DMA controller.  This
 	  can be integrated in chips such as the Atmel AT32ap7000.
-
-config DW_DMAC_BIG_ENDIAN_IO
-	bool "Use big endian I/O register access"
-	default y if AVR32
-	depends on DW_DMAC
-	help
-	  Say yes here to use big endian I/O access when reading and writing
-	  to the DMA controller registers. This is needed on some platforms,
-	  like the Atmel AVR32 architecture.
-
-	  If unsure, use the default setting.
 
 config AT_HDMAC
 	tristate "Atmel AHB DMA support"
@@ -122,8 +112,6 @@ config MPC512X_DMA
 	select DMA_ENGINE
 	---help---
 	  Enable support for the Freescale MPC512x built-in DMA engine.
-
-source "drivers/dma/bestcomm/Kconfig"
 
 config MV_XOR
 	bool "Marvell XOR engine support"
@@ -160,19 +148,13 @@ config TXX9_DMAC
 	  Support the TXx9 SoC internal DMA controller.  This can be
 	  integrated in chips such as the Toshiba TX4927/38/39.
 
-config TEGRA20_APB_DMA
-	bool "NVIDIA Tegra20 APB DMA support"
-	depends on ARCH_TEGRA
+config SH_DMAE
+	tristate "Renesas SuperH DMAC support"
+	depends on (SUPERH && SH_DMA) || (ARM && ARCH_SHMOBILE)
+	depends on !SH_DMA_API
 	select DMA_ENGINE
 	help
-	  Support for the NVIDIA Tegra20 APB DMA controller driver. The
-	  DMA controller is having multiple DMA channel which can be
-	  configured for different peripherals like audio, UART, SPI,
-	  I2C etc which is in APB bus.
-	  This DMA controller transfers data from memory to peripheral fifo
-	  or vice versa. It does not support memory to memory data transfer.
-
-source "drivers/dma/sh/Kconfig"
+	  Enable support for the Renesas SuperH DMA controllers.
 
 config COH901318
 	bool "ST-Ericsson COH901318 DMA support"
@@ -205,21 +187,11 @@ config TIMB_DMA
 	  Enable support for the Timberdale FPGA DMA engine.
 
 config SIRF_DMA
-	tristate "CSR SiRFprimaII/SiRFmarco DMA support"
-	depends on ARCH_SIRF
+	tristate "CSR SiRFprimaII DMA support"
+	depends on ARCH_PRIMA2
 	select DMA_ENGINE
 	help
 	  Enable support for the CSR SiRFprimaII DMA engine.
-
-config TI_EDMA
-	tristate "TI EDMA support"
-	depends on ARCH_DAVINCI
-	select DMA_ENGINE
-	select DMA_VIRTUAL_CHANNELS
-	default n
-	help
-	  Enable support for the TI EDMA controller. This DMA
-	  engine is found on TI DaVinci and AM33xx parts.
 
 config ARCH_HAS_ASYNC_TX_FIND_CHANNEL
 	bool
@@ -265,8 +237,7 @@ config IMX_DMA
 
 config MXS_DMA
 	bool "MXS DMA support"
-	depends on SOC_IMX23 || SOC_IMX28 || SOC_IMX6Q
-	select STMP_DEVICE
+	depends on SOC_IMX23 || SOC_IMX28
 	select DMA_ENGINE
 	help
 	  Support the MXS DMA engine. This engine including APBH-DMA
@@ -283,48 +254,13 @@ config DMA_SA11X0
 	tristate "SA-11x0 DMA support"
 	depends on ARCH_SA1100
 	select DMA_ENGINE
-	select DMA_VIRTUAL_CHANNELS
 	help
 	  Support the DMA engine found on Intel StrongARM SA-1100 and
 	  SA-1110 SoCs.  This DMA engine can only be used with on-chip
 	  devices.
 
-config MMP_TDMA
-	bool "MMP Two-Channel DMA support"
-	depends on ARCH_MMP
-	select DMA_ENGINE
-	help
-	  Support the MMP Two-Channel DMA engine.
-	  This engine used for MMP Audio DMA and pxa910 SQU.
-
-	  Say Y here if you enabled MMP ADMA, otherwise say N.
-
-config DMA_OMAP
-	tristate "OMAP DMA support"
-	depends on ARCH_OMAP
-	select DMA_ENGINE
-	select DMA_VIRTUAL_CHANNELS
-
-config MMP_PDMA
-	bool "MMP PDMA support"
-	depends on (ARCH_MMP || ARCH_PXA)
-	select DMA_ENGINE
-	help
-	  Support the MMP PDMA engine for PXA and MMP platfrom.
-
 config DMA_ENGINE
 	bool
-
-config DMA_VIRTUAL_CHANNELS
-	tristate
-
-config DMA_ACPI
-	def_bool y
-	depends on ACPI
-
-config DMA_OF
-	def_bool y
-	depends on OF
 
 comment "DMA Clients"
 	depends on DMA_ENGINE

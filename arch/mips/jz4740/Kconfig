@@ -7,3 +7,6 @@ config JZ4740_QI_LB60
 	bool "Qi Hardware Ben NanoNote"
 
 endchoice
+
+config HAVE_PWM
+	bool

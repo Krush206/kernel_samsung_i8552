@@ -1,22 +1,11 @@
 # Makefile for vm tools
-#
-TARGETS=page-types slabinfo
-
-LK_DIR = ../lib/lk
-LIBLK = $(LK_DIR)/liblk.a
 
 CC = $(CROSS_COMPILE)gcc
-CFLAGS = -Wall -Wextra -I../lib/
-LDFLAGS = $(LIBLK)
+CFLAGS = -Wall -Wextra
 
-$(TARGETS): liblk
-
-liblk:
-	make -C $(LK_DIR)
-
+all: page-types slabinfo
 %: %.c
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $^
 
 clean:
 	$(RM) page-types slabinfo
-	make -C ../lib/lk clean
