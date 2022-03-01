@@ -5,11 +5,6 @@
  * Many architectures just need a simple module
  * loader without arch specific data.
  */
-#ifndef CONFIG_HAVE_MOD_ARCH_SPECIFIC
-struct mod_arch_specific
-{
-};
-#endif
 
 #ifdef CONFIG_64BIT
 #define Elf_Shdr	Elf64_Shdr
