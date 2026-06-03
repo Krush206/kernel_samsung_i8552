@@ -324,6 +324,9 @@ struct tcp_sock {
 	u32	rcv_tstamp;	/* timestamp of last received ACK (for keepalives) */
 	u32	lsndtime;	/* timestamp of last sent data packet (for restart window) */
 
+	struct list_head tsq_node; /* anchor in tsq_tasklet.head list */
+	unsigned long	tsq_flags;
+
 	/* Data for direct copy to user */
 	struct {
 		struct sk_buff_head	prequeue;
@@ -407,7 +410,7 @@ struct tcp_sock {
 
 	struct sk_buff_head	out_of_order_queue; /* Out of order segments go here */
 
-	/* SACKs data, these 2 need to be together (see tcp_build_and_update_options) */
+	/* SACKs data, these 2 need to be together (see tcp_options_write) */
 	struct tcp_sack_block duplicate_sack[1]; /* D-SACK block */
 	struct tcp_sack_block selective_acks[4]; /* The SACKS themselves*/
 
@@ -473,6 +476,12 @@ struct tcp_sock {
 	 * contains related tcp_cookie_transactions fields.
 	 */
 	struct tcp_cookie_values  *cookie_values;
+};
+
+enum tsq_flags {
+	TSQ_THROTTLED,
+	TSQ_QUEUED,
+	TSQ_OWNED, /* tcp_tasklet_func() found socket was locked */
 };
 
 static inline struct tcp_sock *tcp_sk(const struct sock *sk)

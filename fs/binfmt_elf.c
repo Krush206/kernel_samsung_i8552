@@ -35,7 +35,6 @@
 #include <asm/uaccess.h>
 #include <asm/param.h>
 #include <asm/page.h>
-#include <asm/exec.h>
 
 static int load_elf_binary(struct linux_binprm *bprm, struct pt_regs *regs);
 static int load_elf_library(struct file *);
@@ -132,6 +131,25 @@ static int padzero(unsigned long elf_bss)
 #define ELF_BASE_PLATFORM NULL
 #endif
 
+/*
+ * Use get_random_int() to implement AT_RANDOM while avoiding depletion
+ * of the entropy pool.
+ */
+static void get_atrandom_bytes(unsigned char *buf, size_t nbytes)
+{
+        unsigned char *p = buf;
+
+        while (nbytes) {
+                unsigned int random_variable;
+                size_t chunk = min(nbytes, sizeof(random_variable));
+
+                random_variable = get_random_int();
+                memcpy(p, &random_variable, chunk);
+                p += chunk;
+                nbytes -= chunk;
+        }
+}
+
 static int
 create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 		unsigned long load_addr, unsigned long interp_load_addr)
@@ -193,7 +211,7 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 	/*
 	 * Generate 16 random bytes for userspace PRNG seeding.
 	 */
-	get_random_bytes(k_rand_bytes, sizeof(k_rand_bytes));
+	get_atrandom_bytes(k_rand_bytes, sizeof(k_rand_bytes));
 	u_rand_bytes = (elf_addr_t __user *)
 		       STACK_ALLOC(p, sizeof(k_rand_bytes));
 	if (__copy_to_user(u_rand_bytes, k_rand_bytes, sizeof(k_rand_bytes)))
@@ -314,6 +332,8 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 	return 0;
 }
 
+#ifndef elf_map
+
 static unsigned long elf_map(struct file *filep, unsigned long addr,
 		struct elf_phdr *eppnt, int prot, int type,
 		unsigned long total_size)
@@ -329,7 +349,6 @@ static unsigned long elf_map(struct file *filep, unsigned long addr,
 	if (!size)
 		return addr;
 
-	down_write(&current->mm->mmap_sem);
 	/*
 	* total_size is the size of the ELF (interpreter) image.
 	* The _first_ mmap needs to know the full size, otherwise
@@ -340,15 +359,16 @@ static unsigned long elf_map(struct file *filep, unsigned long addr,
 	*/
 	if (total_size) {
 		total_size = ELF_PAGEALIGN(total_size);
-		map_addr = do_mmap(filep, addr, total_size, prot, type, off);
+		map_addr = vm_mmap(filep, addr, total_size, prot, type, off);
 		if (!BAD_ADDR(map_addr))
-			do_munmap(current->mm, map_addr+size, total_size-size);
+			vm_munmap(map_addr+size, total_size-size);
 	} else
-		map_addr = do_mmap(filep, addr, size, prot, type, off);
+		map_addr = vm_mmap(filep, addr, size, prot, type, off);
 
-	up_write(&current->mm->mmap_sem);
 	return(map_addr);
 }
+
+#endif /* !elf_map */
 
 static unsigned long total_mapping_size(struct elf_phdr *cmds, int nr)
 {
@@ -530,20 +550,18 @@ out:
  * libraries.  There is no binary dependent code anywhere else.
  */
 
-#define INTERPRETER_NONE 0
-#define INTERPRETER_ELF 2
-
 #ifndef STACK_RND_MASK
 #define STACK_RND_MASK (0x7ff >> (PAGE_SHIFT - 12))	/* 8MB of VA */
 #endif
 
 static unsigned long randomize_stack_top(unsigned long stack_top)
 {
-	unsigned int random_variable = 0;
+	unsigned long random_variable = 0;
 
 	if ((current->flags & PF_RANDOMIZE) &&
 		!(current->personality & ADDR_NO_RANDOMIZE)) {
-		random_variable = get_random_int() & STACK_RND_MASK;
+		random_variable = (unsigned long) get_random_int();
+		random_variable &= STACK_RND_MASK;
 		random_variable <<= PAGE_SHIFT;
 	}
 #ifdef CONFIG_STACK_GROWSUP
@@ -741,6 +759,7 @@ static int load_elf_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 	    i < loc->elf_ex.e_phnum; i++, elf_ppnt++) {
 		int elf_prot = 0, elf_flags;
 		unsigned long k, vaddr;
+		unsigned long total_size = 0;
 
 		if (elf_ppnt->p_type != PT_LOAD)
 			continue;
@@ -804,10 +823,16 @@ static int load_elf_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 #else
 			load_bias = ELF_PAGESTART(ELF_ET_DYN_BASE - vaddr);
 #endif
+			total_size = total_mapping_size(elf_phdata,
+							loc->elf_ex.e_phnum);
+			if (!total_size) {
+				error = -EINVAL;
+				goto out_free_dentry;
+			}
 		}
 
 		error = elf_map(bprm->file, load_bias + vaddr, elf_ppnt,
-				elf_prot, elf_flags, 0);
+				elf_prot, elf_flags, total_size);
 		if (BAD_ADDR(error)) {
 			send_sig(SIGKILL, current, 0);
 			retval = IS_ERR((void *)error) ?
@@ -883,7 +908,7 @@ static int load_elf_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 	}
 
 	if (elf_interpreter) {
-		unsigned long uninitialized_var(interp_map_addr);
+		unsigned long interp_map_addr = 0;
 
 		elf_entry = load_elf_interp(&loc->interp_elf_ex,
 					    interpreter,
@@ -1126,6 +1151,7 @@ static unsigned long vma_dump_size(struct vm_area_struct *vma,
 			goto whole;
 		if (!(vma->vm_flags & VM_SHARED) && FILTER(HUGETLB_PRIVATE))
 			goto whole;
+		return 0;
 	}
 
 	/* Do not dump I/O mapped devices or special mappings */
@@ -1242,7 +1268,7 @@ static int writenote(struct memelfnote *men, struct file *file,
 #undef DUMP_WRITE
 
 static void fill_elf_header(struct elfhdr *elf, int segs,
-			    u16 machine, u32 flags, u8 osabi)
+			    u16 machine, u32 flags)
 {
 	memset(elf, 0, sizeof(*elf));
 
@@ -1495,8 +1521,10 @@ static int fill_note_info(struct elfhdr *elf, int phdrs,
 	info->thread = NULL;
 
 	psinfo = kmalloc(sizeof(*psinfo), GFP_KERNEL);
-	if (psinfo == NULL)
+	if (psinfo == NULL) {
+		info->psinfo.data = NULL; /* So we don't free this wrongly */
 		return 0;
+	}
 
 	fill_note(&info->psinfo, "CORE", NT_PRPSINFO, sizeof(*psinfo), psinfo);
 
@@ -1522,7 +1550,7 @@ static int fill_note_info(struct elfhdr *elf, int phdrs,
 	 * Initialize the ELF file header.
 	 */
 	fill_elf_header(elf, phdrs,
-			view->e_machine, view->e_flags, view->ei_osabi);
+			view->e_machine, view->e_flags);
 
 	/*
 	 * Allocate a structure for each thread.
@@ -1698,30 +1726,19 @@ static int elf_note_info_init(struct elf_note_info *info)
 		return 0;
 	info->psinfo = kmalloc(sizeof(*info->psinfo), GFP_KERNEL);
 	if (!info->psinfo)
-		goto notes_free;
+		return 0;
 	info->prstatus = kmalloc(sizeof(*info->prstatus), GFP_KERNEL);
 	if (!info->prstatus)
-		goto psinfo_free;
+		return 0;
 	info->fpu = kmalloc(sizeof(*info->fpu), GFP_KERNEL);
 	if (!info->fpu)
-		goto prstatus_free;
+		return 0;
 #ifdef ELF_CORE_COPY_XFPREGS
 	info->xfpu = kmalloc(sizeof(*info->xfpu), GFP_KERNEL);
 	if (!info->xfpu)
-		goto fpu_free;
+		return 0;
 #endif
 	return 1;
-#ifdef ELF_CORE_COPY_XFPREGS
- fpu_free:
-	kfree(info->fpu);
-#endif
- prstatus_free:
-	kfree(info->prstatus);
- psinfo_free:
-	kfree(info->psinfo);
- notes_free:
-	kfree(info->notes);
-	return 0;
 }
 
 static int fill_note_info(struct elfhdr *elf, int phdrs,
@@ -1761,7 +1778,7 @@ static int fill_note_info(struct elfhdr *elf, int phdrs,
 	elf_core_copy_regs(&info->prstatus->pr_reg, regs);
 
 	/* Set up header */
-	fill_elf_header(elf, phdrs, ELF_ARCH, ELF_CORE_EFLAGS, ELF_OSABI);
+	fill_elf_header(elf, phdrs, ELF_ARCH, ELF_CORE_EFLAGS);
 
 	/*
 	 * Set up the notes in similar form to SVR4 core dumps made

@@ -46,8 +46,7 @@ static int fsync_buffers_list(spinlock_t *lock, struct list_head *list);
 
 #define BH_ENTRY(list) list_entry((list), struct buffer_head, b_assoc_buffers)
 
-inline void
-init_buffer(struct buffer_head *bh, bh_end_io_t *handler, void *private)
+void init_buffer(struct buffer_head *bh, bh_end_io_t *handler, void *private)
 {
 	bh->b_end_io = handler;
 	bh->b_private = private;
@@ -613,14 +612,16 @@ EXPORT_SYMBOL(mark_buffer_dirty_inode);
 static void __set_page_dirty(struct page *page,
 		struct address_space *mapping, int warn)
 {
-	spin_lock_irq(&mapping->tree_lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&mapping->tree_lock, flags);
 	if (page->mapping) {	/* Race with truncate? */
 		WARN_ON_ONCE(warn && !PageUptodate(page));
 		account_page_dirtied(page, mapping);
 		radix_tree_tag_set(&mapping->page_tree,
 				page_index(page), PAGECACHE_TAG_DIRTY);
 	}
-	spin_unlock_irq(&mapping->tree_lock);
+	spin_unlock_irqrestore(&mapping->tree_lock, flags);
 	__mark_inode_dirty(mapping->host, I_DIRTY_PAGES);
 }
 
@@ -850,19 +851,14 @@ try_again:
 		if (!bh)
 			goto no_grow;
 
-		bh->b_bdev = NULL;
 		bh->b_this_page = head;
 		bh->b_blocknr = -1;
 		head = bh;
 
-		bh->b_state = 0;
-		atomic_set(&bh->b_count, 0);
 		bh->b_size = size;
 
 		/* Link the buffer to its page */
 		set_bh_page(bh, page, offset);
-
-		init_buffer(bh, NULL, NULL);
 	}
 	return head;
 /*
@@ -911,17 +907,29 @@ link_dev_buffers(struct page *page, struct buffer_head *head)
 	attach_page_buffers(page, head);
 }
 
+static sector_t blkdev_max_block(struct block_device *bdev, unsigned int size)
+{
+	sector_t retval = ~((sector_t)0);
+	loff_t sz = i_size_read(bdev->bd_inode);
+
+	if (sz) {
+		unsigned int sizebits = blksize_bits(size);
+		retval = (sz >> sizebits);
+	}
+	return retval;
+}
+
 /*
  * Initialise the state of a blockdev page's buffers.
  */ 
-static void
+static sector_t
 init_page_buffers(struct page *page, struct block_device *bdev,
 			sector_t block, int size)
 {
 	struct buffer_head *head = page_buffers(page);
 	struct buffer_head *bh = head;
 	int uptodate = PageUptodate(page);
-	sector_t end_block = blkdev_max_block(I_BDEV(bdev->bd_inode));
+	sector_t end_block = blkdev_max_block(I_BDEV(bdev->bd_inode), size);
 
 	do {
 		if (!buffer_mapped(bh)) {
@@ -936,33 +944,52 @@ init_page_buffers(struct page *page, struct block_device *bdev,
 		block++;
 		bh = bh->b_this_page;
 	} while (bh != head);
+
+	/*
+	 * Caller needs to validate requested block against end of device.
+	 */
+	return end_block;
 }
 
 /*
  * Create the page-cache page that contains the requested block.
  *
- * This is user purely for blockdev mappings.
+ * This is used purely for blockdev mappings.
  */
-static struct page *
+static int
 grow_dev_page(struct block_device *bdev, sector_t block,
-		pgoff_t index, int size)
+	      pgoff_t index, int size, int sizebits, gfp_t gfp)
 {
 	struct inode *inode = bdev->bd_inode;
 	struct page *page;
 	struct buffer_head *bh;
+	sector_t end_block;
+	int ret = 0;		/* Will call free_more_memory() */
+	gfp_t gfp_mask;
 
-	page = find_or_create_page(inode->i_mapping, index,
-		(mapping_gfp_mask(inode->i_mapping) & ~__GFP_FS)|__GFP_MOVABLE);
+	gfp_mask = mapping_gfp_mask(inode->i_mapping) & ~__GFP_FS;
+	gfp_mask |= __GFP_MOVABLE;
+	/*
+	 * XXX: __getblk_slow() can not really deal with failure and
+	 * will endlessly loop on improvised global reclaim.  Prefer
+	 * looping in the allocator rather than here, at least that
+	 * code knows what it's doing.
+	 */
+	gfp_mask |= __GFP_NOFAIL;
+
+	page = find_or_create_page(inode->i_mapping, index, gfp_mask);
 	if (!page)
-		return NULL;
+		return ret;
 
 	BUG_ON(!PageLocked(page));
 
 	if (page_has_buffers(page)) {
 		bh = page_buffers(page);
 		if (bh->b_size == size) {
-			init_page_buffers(page, bdev, block, size);
-			return page;
+			end_block = init_page_buffers(page, bdev,
+						(sector_t)index << sizebits,
+						size);
+			goto done;
 		}
 		if (!try_to_free_buffers(page))
 			goto failed;
@@ -982,14 +1009,15 @@ grow_dev_page(struct block_device *bdev, sector_t block,
 	 */
 	spin_lock(&inode->i_mapping->private_lock);
 	link_dev_buffers(page, bh);
-	init_page_buffers(page, bdev, block, size);
+	end_block = init_page_buffers(page, bdev, (sector_t)index << sizebits,
+			size);
 	spin_unlock(&inode->i_mapping->private_lock);
-	return page;
-
+done:
+	ret = (block < end_block) ? 1 : -ENXIO;
 failed:
 	unlock_page(page);
 	page_cache_release(page);
-	return NULL;
+	return ret;
 }
 
 /*
@@ -997,9 +1025,8 @@ failed:
  * that page was dirty, the buffers are set dirty also.
  */
 static int
-grow_buffers(struct block_device *bdev, sector_t block, int size)
+grow_buffers(struct block_device *bdev, sector_t block, int size, gfp_t gfp)
 {
-	struct page *page;
 	pgoff_t index;
 	int sizebits;
 
@@ -1023,18 +1050,14 @@ grow_buffers(struct block_device *bdev, sector_t block, int size)
 			bdevname(bdev, b));
 		return -EIO;
 	}
-	block = index << sizebits;
+
 	/* Create a page with the proper size buffers.. */
-	page = grow_dev_page(bdev, block, index, size);
-	if (!page)
-		return 0;
-	unlock_page(page);
-	page_cache_release(page);
-	return 1;
+	return grow_dev_page(bdev, block, index, size, sizebits, gfp);
 }
 
-static struct buffer_head *
-__getblk_slow(struct block_device *bdev, sector_t block, int size)
+struct buffer_head *
+__getblk_slow(struct block_device *bdev, sector_t block,
+	     unsigned size, gfp_t gfp)
 {
 	/* Size must be multiple of hard sectorsize */
 	if (unlikely(size & (bdev_logical_block_size(bdev)-1) ||
@@ -1049,20 +1072,21 @@ __getblk_slow(struct block_device *bdev, sector_t block, int size)
 	}
 
 	for (;;) {
-		struct buffer_head * bh;
+		struct buffer_head *bh;
 		int ret;
 
 		bh = __find_get_block(bdev, block, size);
 		if (bh)
 			return bh;
 
-		ret = grow_buffers(bdev, block, size);
+		ret = grow_buffers(bdev, block, size, gfp);
 		if (ret < 0)
 			return NULL;
 		if (ret == 0)
 			free_more_memory();
 	}
 }
+EXPORT_SYMBOL(__getblk_slow);
 
 /*
  * The relationship between dirty buffers and dirty pages:
@@ -1313,28 +1337,25 @@ __find_get_block(struct block_device *bdev, sector_t block, unsigned size)
 EXPORT_SYMBOL(__find_get_block);
 
 /*
- * __getblk will locate (and, if necessary, create) the buffer_head
+ * __getblk_gfp() will locate (and, if necessary, create) the buffer_head
  * which corresponds to the passed block_device, block and size. The
  * returned buffer has its reference count incremented.
  *
- * __getblk() cannot fail - it just keeps trying.  If you pass it an
- * illegal block number, __getblk() will happily return a buffer_head
- * which represents the non-existent block.  Very weird.
- *
- * __getblk() will lock up the machine if grow_dev_page's try_to_free_buffers()
- * attempt is failing.  FIXME, perhaps?
+ * __getblk_gfp() will lock up the machine if grow_dev_page's
+ * try_to_free_buffers() attempt is failing.  FIXME, perhaps?
  */
 struct buffer_head *
-__getblk(struct block_device *bdev, sector_t block, unsigned size)
+__getblk_gfp(struct block_device *bdev, sector_t block,
+	     unsigned size, gfp_t gfp)
 {
 	struct buffer_head *bh = __find_get_block(bdev, block, size);
 
 	might_sleep();
 	if (bh == NULL)
-		bh = __getblk_slow(bdev, block, size);
+		bh = __getblk_slow(bdev, block, size, gfp);
 	return bh;
 }
-EXPORT_SYMBOL(__getblk);
+EXPORT_SYMBOL(__getblk_gfp);
 
 /*
  * Do async read-ahead on a buffer..
@@ -1350,24 +1371,28 @@ void __breadahead(struct block_device *bdev, sector_t block, unsigned size)
 EXPORT_SYMBOL(__breadahead);
 
 /**
- *  __bread() - reads a specified block and returns the bh
+ *  __bread_gfp() - reads a specified block and returns the bh
  *  @bdev: the block_device to read from
  *  @block: number of block
  *  @size: size (in bytes) to read
- * 
+ *  @gfp: page allocation flag
+ *
  *  Reads a specified block, and returns buffer head that contains it.
+ *  The page cache can be allocated from non-movable area
+ *  not to prevent page migration if you set gfp to zero.
  *  It returns NULL if the block was unreadable.
  */
 struct buffer_head *
-__bread(struct block_device *bdev, sector_t block, unsigned size)
+__bread_gfp(struct block_device *bdev, sector_t block,
+		   unsigned size, gfp_t gfp)
 {
-	struct buffer_head *bh = __getblk(bdev, block, size);
+	struct buffer_head *bh = __getblk_gfp(bdev, block, size, gfp);
 
 	if (likely(bh) && !buffer_uptodate(bh))
 		bh = __bread_slow(bh);
 	return bh;
 }
-EXPORT_SYMBOL(__bread);
+EXPORT_SYMBOL(__bread_gfp);
 
 /*
  * invalidate_bh_lrus() is called rarely - but not only at unmount.
@@ -1555,6 +1580,28 @@ void unmap_underlying_metadata(struct block_device *bdev, sector_t block)
 EXPORT_SYMBOL(unmap_underlying_metadata);
 
 /*
+ * Size is a power-of-two in the range 512..PAGE_SIZE,
+ * and the case we care about most is PAGE_SIZE.
+ *
+ * So this *could* possibly be written with those
+ * constraints in mind (relevant mostly if some
+ * architecture has a slow bit-scan instruction)
+ */
+static inline int block_size_bits(unsigned int blocksize)
+{
+	return ilog2(blocksize);
+}
+
+static struct buffer_head *create_page_buffers(struct page *page, struct inode *inode, unsigned int b_state)
+{
+	BUG_ON(!PageLocked(page));
+
+	if (!page_has_buffers(page))
+		create_empty_buffers(page, 1 << ACCESS_ONCE(inode->i_blkbits), b_state);
+	return page_buffers(page);
+}
+
+/*
  * NOTE! All mapped/uptodate combinations are valid:
  *
  *	Mapped	Uptodate	Meaning
@@ -1591,19 +1638,13 @@ static int __block_write_full_page(struct inode *inode, struct page *page,
 	sector_t block;
 	sector_t last_block;
 	struct buffer_head *bh, *head;
-	const unsigned blocksize = 1 << inode->i_blkbits;
+	unsigned int blocksize, bbits;
 	int nr_underway = 0;
 	int write_op = (wbc->sync_mode == WB_SYNC_ALL ?
 			WRITE_SYNC : WRITE);
 
-	BUG_ON(!PageLocked(page));
-
-	last_block = (i_size_read(inode) - 1) >> inode->i_blkbits;
-
-	if (!page_has_buffers(page)) {
-		create_empty_buffers(page, blocksize,
+	head = create_page_buffers(page, inode,
 					(1 << BH_Dirty)|(1 << BH_Uptodate));
-	}
 
 	/*
 	 * Be very careful.  We have no exclusion from __set_page_dirty_buffers
@@ -1615,9 +1656,12 @@ static int __block_write_full_page(struct inode *inode, struct page *page,
 	 * handle that here by just cleaning them.
 	 */
 
-	block = (sector_t)page->index << (PAGE_CACHE_SHIFT - inode->i_blkbits);
-	head = page_buffers(page);
 	bh = head;
+	blocksize = bh->b_size;
+	bbits = block_size_bits(blocksize);
+
+	block = (sector_t)page->index << (PAGE_CACHE_SHIFT - bbits);
+	last_block = (i_size_read(inode) - 1) >> bbits;
 
 	/*
 	 * Get all the dirty buffers mapped to disk addresses and
@@ -1808,12 +1852,10 @@ int __block_write_begin(struct page *page, loff_t pos, unsigned len,
 	BUG_ON(to > PAGE_CACHE_SIZE);
 	BUG_ON(from > to);
 
-	blocksize = 1 << inode->i_blkbits;
-	if (!page_has_buffers(page))
-		create_empty_buffers(page, blocksize, 0);
-	head = page_buffers(page);
+	head = create_page_buffers(page, inode, 0);
+	blocksize = head->b_size;
+	bbits = block_size_bits(blocksize);
 
-	bbits = inode->i_blkbits;
 	block = (sector_t)page->index << (PAGE_CACHE_SHIFT - bbits);
 
 	for(bh = head, block_start = 0; bh != head || !block_start;
@@ -1883,11 +1925,11 @@ static int __block_commit_write(struct inode *inode, struct page *page,
 	unsigned blocksize;
 	struct buffer_head *bh, *head;
 
-	blocksize = 1 << inode->i_blkbits;
+	bh = head = page_buffers(page);
+	blocksize = bh->b_size;
 
-	for(bh = head = page_buffers(page), block_start = 0;
-	    bh != head || !block_start;
-	    block_start=block_end, bh = bh->b_this_page) {
+	block_start = 0;
+	do {
 		block_end = block_start + blocksize;
 		if (block_end <= from || block_start >= to) {
 			if (!buffer_uptodate(bh))
@@ -1897,7 +1939,10 @@ static int __block_commit_write(struct inode *inode, struct page *page,
 			mark_buffer_dirty(bh);
 		}
 		clear_buffer_new(bh);
-	}
+
+		block_start = block_end;
+		bh = bh->b_this_page;
+	} while (bh != head);
 
 	/*
 	 * If this is a partial write which happened to make all buffers
@@ -1980,6 +2025,7 @@ int generic_write_end(struct file *file, struct address_space *mapping,
 			struct page *page, void *fsdata)
 {
 	struct inode *inode = mapping->host;
+	loff_t old_size = inode->i_size;
 	int i_size_changed = 0;
 
 	copied = block_write_end(file, mapping, pos, len, copied, page, fsdata);
@@ -1999,6 +2045,8 @@ int generic_write_end(struct file *file, struct address_space *mapping,
 	unlock_page(page);
 	page_cache_release(page);
 
+	if (old_size < pos)
+		pagecache_isize_extended(inode, old_size, pos);
 	/*
 	 * Don't mark the inode dirty under page lock. First, it unnecessarily
 	 * makes the holding time of page lock longer. Second, it forces lock
@@ -2022,7 +2070,6 @@ EXPORT_SYMBOL(generic_write_end);
 int block_is_partially_uptodate(struct page *page, read_descriptor_t *desc,
 					unsigned long from)
 {
-	struct inode *inode = page->mapping->host;
 	unsigned block_start, block_end, blocksize;
 	unsigned to;
 	struct buffer_head *bh, *head;
@@ -2031,13 +2078,13 @@ int block_is_partially_uptodate(struct page *page, read_descriptor_t *desc,
 	if (!page_has_buffers(page))
 		return 0;
 
-	blocksize = 1 << inode->i_blkbits;
+	head = page_buffers(page);
+	blocksize = head->b_size;
 	to = min_t(unsigned, PAGE_CACHE_SIZE - from, desc->count);
 	to = from + to;
 	if (from < blocksize && to > PAGE_CACHE_SIZE - blocksize)
 		return 0;
 
-	head = page_buffers(page);
 	bh = head;
 	block_start = 0;
 	do {
@@ -2070,18 +2117,16 @@ int block_read_full_page(struct page *page, get_block_t *get_block)
 	struct inode *inode = page->mapping->host;
 	sector_t iblock, lblock;
 	struct buffer_head *bh, *head, *arr[MAX_BUF_PER_PAGE];
-	unsigned int blocksize;
+	unsigned int blocksize, bbits;
 	int nr, i;
 	int fully_mapped = 1;
 
-	BUG_ON(!PageLocked(page));
-	blocksize = 1 << inode->i_blkbits;
-	if (!page_has_buffers(page))
-		create_empty_buffers(page, blocksize, 0);
-	head = page_buffers(page);
+	head = create_page_buffers(page, inode, 0);
+	blocksize = head->b_size;
+	bbits = block_size_bits(blocksize);
 
-	iblock = (sector_t)page->index << (PAGE_CACHE_SHIFT - inode->i_blkbits);
-	lblock = (i_size_read(inode)+blocksize-1) >> inode->i_blkbits;
+	iblock = (sector_t)page->index << (PAGE_CACHE_SHIFT - bbits);
+	lblock = (i_size_read(inode)+blocksize-1) >> bbits;
 	bh = head;
 	nr = 0;
 	i = 0;
@@ -2219,6 +2264,11 @@ static int cont_expand_zero(struct file *file, struct address_space *mapping,
 		err = 0;
 
 		balance_dirty_pages_ratelimited(mapping);
+
+		if (unlikely(fatal_signal_pending(current))) {
+			err = -EINTR;
+			goto out;
+		}
 	}
 
 	/* page covers the boundary, find the boundary offset */
@@ -2313,6 +2363,12 @@ int __block_page_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf,
 	unsigned long end;
 	loff_t size;
 	int ret;
+
+	/*
+	 * Update file times before taking page lock. We may end up failing the
+	 * fault so this update may be superfluous but who really cares...
+	 */
+	file_update_time(vma->vm_file);
 
 	lock_page(page);
 	size = i_size_read(inode);
@@ -3152,7 +3208,7 @@ SYSCALL_DEFINE2(bdflush, int, func, long, data)
 /*
  * Buffer-head allocation
  */
-static struct kmem_cache *bh_cachep;
+static struct kmem_cache *bh_cachep __read_mostly;
 
 /*
  * Once the number of bh's in the machine exceeds this level, we start

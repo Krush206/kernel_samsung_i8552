@@ -568,8 +568,9 @@ static int raw_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	flowi4_init_output(&fl4, ipc.oif, sk->sk_mark, tos,
 			   RT_SCOPE_UNIVERSE,
 			   inet->hdrincl ? IPPROTO_RAW : sk->sk_protocol,
-			   FLOWI_FLAG_CAN_SLEEP, daddr, saddr, 0, 0,
- 			   sock_i_uid(sk));
+			   inet_sk_flowi_flags(sk) | FLOWI_FLAG_CAN_SLEEP,
+			   daddr, saddr, 0, 0,
+			   sock_i_uid(sk));
 
 	if (!inet->hdrincl) {
 		err = raw_probe_proto_opt(&fl4, msg);
@@ -910,7 +911,7 @@ static struct sock *raw_get_first(struct seq_file *seq)
 			++state->bucket) {
 		struct hlist_node *node;
 
-		sk_for_each(sk, &state->h->ht[state->bucket])
+		sk_for_each(sk, node, &state->h->ht[state->bucket])
 			if (sock_net(sk) == seq_file_net(seq))
 				goto found;
 	}

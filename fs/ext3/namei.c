@@ -573,11 +573,8 @@ static int htree_dirblock_to_tree(struct file *dir_file,
 		if (!ext3_check_dir_entry("htree_dirblock_to_tree", dir, de, bh,
 					(block<<EXT3_BLOCK_SIZE_BITS(dir->i_sb))
 						+((char *)de - bh->b_data))) {
-			/* On error, skip the f_pos to the next block. */
-			dir_file->f_pos = (dir_file->f_pos |
-					(dir->i_sb->s_blocksize - 1)) + 1;
-			brelse (bh);
-			return count;
+			/* silently ignore the rest of the block */
+			break;
 		}
 		ext3fs_dirhash(de->name, de->name_len, hinfo);
 		if ((hinfo->hash < start_hash) ||
@@ -1671,8 +1668,8 @@ static int ext3_add_nondir(handle_t *handle,
 	int err = ext3_add_entry(handle, dentry, inode);
 	if (!err) {
 		ext3_mark_inode_dirty(handle, inode);
-		d_instantiate(dentry, inode);
 		unlock_new_inode(inode);
+		d_instantiate(dentry, inode);
 		return 0;
 	}
 	drop_nlink(inode);
@@ -1836,8 +1833,8 @@ out_clear_inode:
 	if (err)
 		goto out_clear_inode;
 
-	d_instantiate(dentry, inode);
 	unlock_new_inode(inode);
+	d_instantiate(dentry, inode);
 out_stop:
 	brelse(dir_block);
 	ext3_journal_stop(handle);

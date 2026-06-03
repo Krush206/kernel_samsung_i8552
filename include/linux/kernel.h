@@ -40,6 +40,8 @@
 
 #define STACK_MAGIC	0xdeadbeef
 
+#define REPEAT_BYTE(x)	((~0ul / 0xff) * (x))
+
 #define ALIGN(x, a)		__ALIGN_KERNEL((x), (a))
 #define __ALIGN_MASK(x, mask)	__ALIGN_KERNEL_MASK((x), (mask))
 #define PTR_ALIGN(p, a)		((typeof(p))ALIGN((unsigned long)(p), (a)))
@@ -429,11 +431,6 @@ static inline char *hex_byte_pack(char *buf, u8 byte)
 	return buf;
 }
 
-static inline char * __deprecated pack_hex_byte(char *buf, u8 byte)
-{
-	return hex_byte_pack(buf, byte);
-}
-
 extern int hex_to_bin(char ch);
 extern int __must_check hex2bin(u8 *dst, const char *src, size_t count);
 
@@ -507,15 +504,16 @@ do {									\
 
 #define trace_printk(fmt, args...)					\
 do {									\
-	__trace_printk_check_format(fmt, ##args);			\
-	if (__builtin_constant_p(fmt)) {				\
-		static const char *trace_printk_fmt			\
-		  __attribute__((section("__trace_printk_fmt"))) =	\
-			__builtin_constant_p(fmt) ? fmt : NULL;		\
+	static const char *trace_printk_fmt				\
+		__attribute__((section("__trace_printk_fmt"))) =	\
+		__builtin_constant_p(fmt) ? fmt : NULL;			\
 									\
+	__trace_printk_check_format(fmt, ##args);			\
+									\
+	if (__builtin_constant_p(fmt))					\
 		__trace_bprintk(_THIS_IP_, trace_printk_fmt, ##args);	\
-	} else								\
-		__trace_printk(_THIS_IP_, fmt, ##args);		\
+	else								\
+		__trace_printk(_THIS_IP_, fmt, ##args);			\
 } while (0)
 
 extern __printf(2, 3)

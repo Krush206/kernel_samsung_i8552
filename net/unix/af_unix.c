@@ -253,8 +253,9 @@ static struct sock *__unix_find_socket_byname(struct net *net,
 					      int len, int type, unsigned hash)
 {
 	struct sock *s;
+	struct hlist_node *node;
 
-	sk_for_each(s, &unix_socket_table[hash ^ type]) {
+	sk_for_each(s,node, &unix_socket_table[hash ^ type]) {
 		struct unix_sock *u = unix_sk(s);
 
 		if (!net_eq(sock_net(s), net))
@@ -287,9 +288,9 @@ static inline struct sock *unix_find_socket_byname(struct net *net,
 static struct sock *unix_find_socket_byinode(struct inode *i)
 {
 	struct sock *s;
-
+	struct hlist_node *node;
 	spin_lock(&unix_table_lock);
-	sk_for_each(s, &unix_socket_table[i->i_ino & (UNIX_HASH_SIZE - 1)]) {
+	sk_for_each(s,node, &unix_socket_table[i->i_ino & (UNIX_HASH_SIZE - 1)]) {
 		struct dentry *dentry = unix_sk(s)->path.dentry;
 
 		if (dentry && dentry->d_inode == i) {
@@ -440,7 +441,6 @@ static void unix_release_sock(struct sock *sk, int embrion)
 
 	if (unix_tot_inflight)
 		unix_gc();		/* Garbage collect fds */
-
 }
 
 static void init_peercred(struct sock *sk)
@@ -533,7 +533,6 @@ static int unix_set_peek_off(struct sock *sk, int val)
 	mutex_unlock(&u->readlock);
 
 	return 0;
-
 }
 
 
@@ -1928,8 +1927,6 @@ static int unix_stream_recvmsg(struct kiocb *iocb, struct socket *sock,
 		goto out;
 
 	target = sock_rcvlowat(sk, flags&MSG_WAITALL, size);
-
-
 	timeo = sock_rcvtimeo(sk, noblock);
 
 	/* Lock the socket to prevent queue disordering

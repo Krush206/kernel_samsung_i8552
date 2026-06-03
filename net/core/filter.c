@@ -38,6 +38,7 @@
 #include <linux/filter.h>
 #include <linux/reciprocal_div.h>
 #include <linux/ratelimit.h>
+#include <linux/seccomp.h>
 
 /* No hurry in this branch
  *
@@ -317,10 +318,15 @@ load_b:
 		case BPF_S_ANC_CPU:
 			A = raw_smp_processor_id();
 			continue;
+		case BPF_S_ANC_ALU_XOR_X:
+			A ^= X;
+			continue;
 		case BPF_S_ANC_NLATTR: {
 			struct nlattr *nla;
 
 			if (skb_is_nonlinear(skb))
+				return 0;
+			if (skb->len < sizeof(struct nlattr))
 				return 0;
 			if (A > skb->len - sizeof(struct nlattr))
 				return 0;
@@ -338,11 +344,13 @@ load_b:
 
 			if (skb_is_nonlinear(skb))
 				return 0;
+			if (skb->len < sizeof(struct nlattr))
+				return 0;
 			if (A > skb->len - sizeof(struct nlattr))
 				return 0;
 
 			nla = (struct nlattr *)&skb->data[A];
-			if (nla->nla_len > A - skb->len)
+			if (nla->nla_len > skb->len - A)
 				return 0;
 
 			nla = nla_find_nested(nla, X);
@@ -352,6 +360,11 @@ load_b:
 				A = 0;
 			continue;
 		}
+#ifdef CONFIG_SECCOMP_FILTER
+		case BPF_S_ANC_SECCOMP_LD_W:
+			A = seccomp_bpf_load(fentry->k);
+			continue;
+#endif
 		default:
 			WARN_RATELIMIT(1, "Unknown code:%u jt:%u tf:%u k:%u\n",
 				       fentry->code, fentry->jt,
@@ -561,6 +574,7 @@ int sk_chk_filter(struct sock_filter *filter, unsigned int flen)
 			ANCILLARY(HATYPE);
 			ANCILLARY(RXHASH);
 			ANCILLARY(CPU);
+			ANCILLARY(ALU_XOR_X);
 			}
 		}
 		ftest->code = code;

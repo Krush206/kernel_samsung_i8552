@@ -56,6 +56,7 @@
 #include <asm/irq_vectors.h>
 #include <asm/cpufeature.h>
 #include <asm/alternative-asm.h>
+#include <asm/asm.h>
 
 /* Avoid __ASSEMBLER__'ifying <linux/audit.h> just for this.  */
 #include <linux/elf-em.h>
@@ -151,10 +152,8 @@
 .pushsection .fixup, "ax"
 99:	movl $0, (%esp)
 	jmp 98b
-.section __ex_table, "a"
-	.align 4
-	.long 98b, 99b
 .popsection
+	_ASM_EXTABLE(98b,99b)
 .endm
 
 .macro PTGS_TO_GS
@@ -164,10 +163,8 @@
 .pushsection .fixup, "ax"
 99:	movl $0, PT_GS(%esp)
 	jmp 98b
-.section __ex_table, "a"
-	.align 4
-	.long 98b, 99b
 .popsection
+	_ASM_EXTABLE(98b,99b)
 .endm
 
 .macro GS_TO_REG reg
@@ -249,12 +246,10 @@
 	jmp 2b
 6:	movl $0, (%esp)
 	jmp 3b
-.section __ex_table, "a"
-	.align 4
-	.long 1b, 4b
-	.long 2b, 5b
-	.long 3b, 6b
 .popsection
+	_ASM_EXTABLE(1b,4b)
+	_ASM_EXTABLE(2b,5b)
+	_ASM_EXTABLE(3b,6b)
 	POP_GS_EX
 .endm
 
@@ -415,10 +410,7 @@ sysenter_past_esp:
 	jae syscall_fault
 1:	movl (%ebp),%ebp
 	movl %ebp,PT_EBP(%esp)
-.section __ex_table,"a"
-	.align 4
-	.long 1b,syscall_fault
-.previous
+	_ASM_EXTABLE(1b,syscall_fault)
 
 	GET_THREAD_INFO(%ebp)
 
@@ -426,8 +418,9 @@ sysenter_past_esp:
 	jnz sysenter_audit
 sysenter_do_call:
 	cmpl $(NR_syscalls), %eax
-	jae syscall_badsys
+	jae sysenter_badsys
 	call *sys_call_table(,%eax,4)
+sysenter_after_call:
 	movl %eax,PT_EAX(%esp)
 	LOCKDEP_SYS_EXIT
 	DISABLE_INTERRUPTS(CLBR_ANY)
@@ -485,10 +478,8 @@ sysexit_audit:
 .pushsection .fixup,"ax"
 2:	movl $0,PT_FS(%esp)
 	jmp 1b
-.section __ex_table,"a"
-	.align 4
-	.long 1b,2b
 .popsection
+	_ASM_EXTABLE(1b,2b)
 	PTGS_TO_GS_EX
 ENDPROC(ia32_sysenter_target)
 
@@ -509,6 +500,7 @@ ENTRY(system_call)
 	jae syscall_badsys
 syscall_call:
 	call *sys_call_table(,%eax,4)
+syscall_after_call:
 	movl %eax,PT_EAX(%esp)		# store the return value
 syscall_exit:
 	LOCKDEP_SYS_EXIT
@@ -523,6 +515,7 @@ syscall_exit:
 restore_all:
 	TRACE_IRQS_IRET
 restore_all_notrace:
+#ifdef CONFIG_X86_ESPFIX32
 	movl PT_EFLAGS(%esp), %eax	# mix EFLAGS, SS and CS
 	# Warning: PT_OLDSS(%esp) contains the wrong/random values if we
 	# are returning to the kernel.
@@ -533,6 +526,7 @@ restore_all_notrace:
 	cmpl $((SEGMENT_LDT << 8) | USER_RPL), %eax
 	CFI_REMEMBER_STATE
 	je ldt_ss			# returning to user-space with LDT SS
+#endif
 restore_nocheck:
 	RESTORE_REGS 4			# skip orig_eax/error_code
 irq_return:
@@ -543,18 +537,11 @@ ENTRY(iret_exc)
 	pushl $do_iret_error
 	jmp error_code
 .previous
-.section __ex_table,"a"
-	.align 4
-	.long irq_return,iret_exc
-.previous
+	_ASM_EXTABLE(irq_return,iret_exc)
 
+#ifdef CONFIG_X86_ESPFIX32
 	CFI_RESTORE_STATE
 ldt_ss:
-	larl PT_OLDSS(%esp), %eax
-	jnz restore_nocheck
-	testl $0x00400000, %eax		# returning to 32bit stack?
-	jnz restore_nocheck		# allright, normal return
-
 #ifdef CONFIG_PARAVIRT
 	/*
 	 * The kernel can't run on a non-flat stack if paravirt mode
@@ -596,6 +583,7 @@ ldt_ss:
 	lss (%esp), %esp		/* switch to espfix segment */
 	CFI_ADJUST_CFA_OFFSET -8
 	jmp restore_nocheck
+#endif
 	CFI_ENDPROC
 ENDPROC(system_call)
 
@@ -682,8 +670,13 @@ syscall_fault:
 END(syscall_fault)
 
 syscall_badsys:
-	movl $-ENOSYS,PT_EAX(%esp)
-	jmp resume_userspace
+	movl $-ENOSYS,%eax
+	jmp syscall_after_call
+END(syscall_badsys)
+
+sysenter_badsys:
+	movl $-ENOSYS,%eax
+	jmp sysenter_after_call
 END(syscall_badsys)
 	CFI_ENDPROC
 /*
@@ -764,6 +757,7 @@ ENDPROC(ptregs_clone)
  * the high word of the segment base from the GDT and swiches to the
  * normal stack and adjusts ESP with the matching offset.
  */
+#ifdef CONFIG_X86_ESPFIX32
 	/* fixup the stack */
 	mov GDT_ESPFIX_SS + 4, %al /* bits 16..23 */
 	mov GDT_ESPFIX_SS + 7, %ah /* bits 24..31 */
@@ -773,8 +767,10 @@ ENDPROC(ptregs_clone)
 	pushl_cfi %eax
 	lss (%esp), %esp		/* switch to the normal stack segment */
 	CFI_ADJUST_CFA_OFFSET -8
+#endif
 .endm
 .macro UNWIND_ESPFIX_STACK
+#ifdef CONFIG_X86_ESPFIX32
 	movl %ss, %eax
 	/* see if on espfix stack */
 	cmpw $__ESPFIX_SS, %ax
@@ -785,6 +781,7 @@ ENDPROC(ptregs_clone)
 	/* switch to normal stack */
 	FIXUP_ESPFIX_STACK
 27:
+#endif
 .endm
 
 /*
@@ -901,10 +898,7 @@ END(device_not_available)
 #ifdef CONFIG_PARAVIRT
 ENTRY(native_iret)
 	iret
-.section __ex_table,"a"
-	.align 4
-	.long native_iret, iret_exc
-.previous
+	_ASM_EXTABLE(native_iret, iret_exc)
 END(native_iret)
 
 ENTRY(native_irq_enable_sysexit)
@@ -1025,7 +1019,7 @@ ENTRY(xen_sysenter_target)
 
 ENTRY(xen_hypervisor_callback)
 	CFI_STARTPROC
-	pushl_cfi $0
+	pushl_cfi $-1 /* orig_ax = -1 => not a system call */
 	SAVE_ALL
 	TRACE_IRQS_OFF
 
@@ -1067,14 +1061,15 @@ ENTRY(xen_failsafe_callback)
 2:	mov 8(%esp),%es
 3:	mov 12(%esp),%fs
 4:	mov 16(%esp),%gs
+	/* EAX == 0 => Category 1 (Bad segment)
+	   EAX != 0 => Category 2 (Bad IRET) */
 	testl %eax,%eax
 	popl_cfi %eax
 	lea 16(%esp),%esp
 	CFI_ADJUST_CFA_OFFSET -16
 	jz 5f
-	addl $16,%esp
-	jmp iret_exc		# EAX != 0 => Category 2 (Bad IRET)
-5:	pushl_cfi $0		# EAX == 0 => Category 1 (Bad segment)
+	jmp iret_exc
+5:	pushl_cfi $-1 /* orig_ax = -1 => not a system call */
 	SAVE_ALL
 	jmp ret_from_exception
 	CFI_ENDPROC
@@ -1093,13 +1088,10 @@ ENTRY(xen_failsafe_callback)
 	movl %eax,16(%esp)
 	jmp 4b
 .previous
-.section __ex_table,"a"
-	.align 4
-	.long 1b,6b
-	.long 2b,7b
-	.long 3b,8b
-	.long 4b,9b
-.previous
+	_ASM_EXTABLE(1b,6b)
+	_ASM_EXTABLE(2b,7b)
+	_ASM_EXTABLE(3b,8b)
+	_ASM_EXTABLE(4b,9b)
 ENDPROC(xen_failsafe_callback)
 
 BUILD_INTERRUPT3(xen_hvm_callback_vector, XEN_HVM_EVTCHN_CALLBACK,
@@ -1315,11 +1307,13 @@ END(debug)
  */
 ENTRY(nmi)
 	RING0_INT_FRAME
+#ifdef CONFIG_X86_ESPFIX32
 	pushl_cfi %eax
 	movl %ss, %eax
 	cmpw $__ESPFIX_SS, %ax
 	popl_cfi %eax
 	je nmi_espfix_stack
+#endif
 	cmpl $ia32_sysenter_target,(%esp)
 	je nmi_stack_fixup
 	pushl_cfi %eax
@@ -1359,6 +1353,7 @@ nmi_debug_stack_check:
 	FIX_STACK 24, nmi_stack_correct, 1
 	jmp nmi_stack_correct
 
+#ifdef CONFIG_X86_ESPFIX32
 nmi_espfix_stack:
 	/* We have a RING0_INT_FRAME here.
 	 *
@@ -1380,6 +1375,7 @@ nmi_espfix_stack:
 	lss 12+4(%esp), %esp		# back to espfix stack
 	CFI_ADJUST_CFA_OFFSET -24
 	jmp irq_return
+#endif
 	CFI_ENDPROC
 END(nmi)
 

@@ -28,6 +28,8 @@
 #include <linux/mman.h>
 #include <linux/mmu_notifier.h>
 #include <linux/fs.h>
+#include <linux/mm.h>
+#include <linux/vmacache.h>
 #include <linux/nsproxy.h>
 #include <linux/capability.h>
 #include <linux/cpu.h>
@@ -343,7 +345,7 @@ static int dup_mmap(struct mm_struct *mm, struct mm_struct *oldmm)
 
 	mm->locked_vm = 0;
 	mm->mmap = NULL;
-	mm->mmap_cache = NULL;
+	mm->vmacache_seqnum = 0;
 	mm->free_area_cache = oldmm->mmap_base;
 	mm->cached_hole_size = ~0UL;
 	mm->map_count = 0;
@@ -372,7 +374,8 @@ static int dup_mmap(struct mm_struct *mm, struct mm_struct *oldmm)
 		}
 		charge = 0;
 		if (mpnt->vm_flags & VM_ACCOUNT) {
-			unsigned int len = (mpnt->vm_end - mpnt->vm_start) >> PAGE_SHIFT;
+			unsigned long len;
+			len = (mpnt->vm_end - mpnt->vm_start) >> PAGE_SHIFT;
 			if (security_vm_enough_memory_mm(oldmm, len)) /* sic */
 				goto fail_nomem;
 			charge = len;
@@ -583,8 +586,9 @@ EXPORT_SYMBOL_GPL(__mmdrop);
 /*
  * Decrement the use count and release all resources for an mm.
  */
-void mmput(struct mm_struct *mm)
+int mmput(struct mm_struct *mm)
 {
+	int mm_freed = 0;
 	might_sleep();
 
 	if (atomic_dec_and_test(&mm->mm_users)) {
@@ -598,11 +602,12 @@ void mmput(struct mm_struct *mm)
 			list_del(&mm->mmlist);
 			spin_unlock(&mmlist_lock);
 		}
-		put_swap_token(mm);
 		if (mm->binfmt)
 			module_put(mm->binfmt->module);
 		mmdrop(mm);
+		mm_freed = 1;
 	}
+	return mm_freed;
 }
 EXPORT_SYMBOL_GPL(mmput);
 
@@ -814,10 +819,6 @@ struct mm_struct *dup_mm(struct task_struct *tsk)
 	memcpy(mm, oldmm, sizeof(*mm));
 	mm_init_cpumask(mm);
 
-	/* Initializing for Swap token stuff */
-	mm->token_priority = 0;
-	mm->last_interval = 0;
-
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 	mm->pmd_huge_pte = NULL;
 #endif
@@ -883,6 +884,9 @@ static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)
 	if (!oldmm)
 		return 0;
 
+	/* initialize the new vmacache entries */
+	vmacache_flush(tsk);
+
 	if (clone_flags & CLONE_VM) {
 		atomic_inc(&oldmm->mm_users);
 		mm = oldmm;
@@ -895,10 +899,6 @@ static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)
 		goto fail_nomem;
 
 good_mm:
-	/* Initializing for Swap token stuff */
-	mm->token_priority = 0;
-	mm->last_interval = 0;
-
 	tsk->mm = mm;
 	tsk->active_mm = mm;
 	return 0;
@@ -1044,6 +1044,11 @@ static int copy_signal(unsigned long clone_flags, struct task_struct *tsk)
 	sig->nr_threads = 1;
 	atomic_set(&sig->live, 1);
 	atomic_set(&sig->sigcnt, 1);
+
+	/* list_add(thread_node, thread_head) without INIT_LIST_HEAD() */
+	sig->thread_head = (struct list_head)LIST_HEAD_INIT(tsk->thread_node);
+	tsk->thread_node = (struct list_head)LIST_HEAD_INIT(sig->thread_head);
+
 	init_waitqueue_head(&sig->wait_chldexit);
 	if (clone_flags & CLONE_NEWPID)
 		sig->flags |= SIGNAL_UNKILLABLE;
@@ -1142,7 +1147,6 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 {
 	int retval;
 	struct task_struct *p;
-	int cgroup_callbacks_done = 0;
 
 	if ((clone_flags & (CLONE_NEWNS|CLONE_FS)) == (CLONE_NEWNS|CLONE_FS))
 		return ERR_PTR(-EINVAL);
@@ -1260,7 +1264,6 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 		p->mempolicy = NULL;
 		goto bad_fork_cleanup_cgroup;
 	}
-	mpol_fix_fork_child_flag(p);
 #endif
 #ifdef CONFIG_CPUSETS
 	p->cpuset_mem_spread_rotor = NUMA_NO_NODE;
@@ -1405,12 +1408,6 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 	p->group_leader = p;
 	INIT_LIST_HEAD(&p->thread_group);
 
-	/* Now that the task is set up, run cgroup callbacks if
-	 * necessary. We need to run them before the task is visible
-	 * on the tasklist. */
-	cgroup_fork_callbacks(p);
-	cgroup_callbacks_done = 1;
-
 	/* Need tasklist lock for parent etc handling! */
 	write_lock_irq(&tasklist_lock);
 
@@ -1446,7 +1443,10 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 		atomic_inc(&current->signal->live);
 		atomic_inc(&current->signal->sigcnt);
 		p->group_leader = current->group_leader;
-		list_add_tail_rcu(&p->thread_group, &p->group_leader->thread_group);
+		list_add_tail_rcu(&p->thread_group,
+				  &p->group_leader->thread_group);
+		list_add_tail_rcu(&p->thread_node,
+				  &p->signal->thread_head);
 	}
 
 	if (likely(p->pid)) {
@@ -1515,7 +1515,7 @@ bad_fork_cleanup_cgroup:
 #endif
 	if (clone_flags & CLONE_THREAD)
 		threadgroup_change_end(current);
-	cgroup_exit(p, cgroup_callbacks_done);
+	cgroup_exit(p, 0);
 	delayacct_tsk_free(p);
 	module_put(task_thread_info(p)->exec_domain->module);
 bad_fork_cleanup_count:

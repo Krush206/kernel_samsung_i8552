@@ -56,7 +56,7 @@ static struct workqueue_struct *workqueue;
  * performance cost, and for other reasons may not always be desired.
  * So we allow it it to be disabled.
  */
-bool use_spi_crc = 1;
+bool use_spi_crc = 0;
 module_param(use_spi_crc, bool, 0);
 
 /*
@@ -2218,13 +2218,6 @@ void mmc_rescan(struct work_struct *work)
 	if (host->bus_dead)
 		extend_wakelock = 1;
 
-
-	/* If the card was removed the bus will be marked
-	 * as dead - extend the wakelock so userspace
-	 * can respond */
-	if (host->bus_dead)
-		extend_wakelock = 1;
-
 	/*
 	 * Let mmc_bus_put() free the bus/bus_ops if we've found that
 	 * the card is no longer present.
@@ -2631,6 +2624,7 @@ int mmc_pm_notify(struct notifier_block *notify_block,
 	switch (mode) {
 	case PM_HIBERNATION_PREPARE:
 	case PM_SUSPEND_PREPARE:
+
 
 		spin_lock_irqsave(&host->lock, flags);
 		if (mmc_bus_needs_resume(host)) {

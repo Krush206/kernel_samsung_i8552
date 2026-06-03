@@ -162,11 +162,6 @@ static unsigned int counters_total_to_per_cpu(unsigned int counters)
 	return counters >> vpe_shift();
 }
 
-static unsigned int counters_per_cpu_to_total(unsigned int counters)
-{
-	return counters << vpe_shift();
-}
-
 #else /* !CONFIG_MIPS_MT_SMP */
 #define vpe_id()	0
 
@@ -1325,7 +1320,7 @@ static int mipsxx_pmu_handle_shared_irq(void)
 
 	regs = get_irq_regs();
 
-	perf_sample_data_init(&data, 0);
+	perf_sample_data_init(&data, 0, 0);
 
 	switch (counters) {
 #define HANDLE_COUNTER(n)						\

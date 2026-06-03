@@ -5,6 +5,7 @@
 #
 
 OBJS		=
+plus_sec := $(call as-instr,.arch_extension sec,+sec)
 
 # Ensure that MMCIF loader code appears early in the image
 # to minimise that number of bocks that have to be read in
@@ -22,7 +23,10 @@ OBJS		+= sdhi-sh7372.o
 endif
 
 AFLAGS_head.o += -DTEXT_OFFSET=$(TEXT_OFFSET)
+AFLAGS_head.o += -Wa,-march=armv7-a$(plus_sec)
 HEAD	= head.o
+AFLAGS_misc.o +=-Wa,-march=armv7-a$(plus_sec)
+AFLAGS_decompress.o += -Wa,-march=armv7-a$(plus_sec)
 OBJS	+= misc.o decompress.o
 ifeq ($(CONFIG_KERNEL_LZ4),y)
 CFLAGS_decompress.o := -Os
@@ -117,12 +121,12 @@ endif
 
 targets       := vmlinux vmlinux.lds \
 		 piggy.$(suffix_y) piggy.$(suffix_y).o \
-		 lib1funcs.o lib1funcs.S ashldi3.o ashldi3.S \
-		 font.o font.c head.o misc.o $(OBJS)
+		 lib1funcs.o lib1funcs.S ashldi3.o ashldi3.S bswapsdi2.o \
+		 bswapsdi2.S font.o font.c head.o misc.o $(OBJS)
 
 # Make sure files are removed during clean
 extra-y       += piggy.gzip piggy.lzo piggy.lzma piggy.xzkern piggy.lz4 \
-		 lib1funcs.S ashldi3.S $(libfdt) $(libfdt_hdrs)
+		 lib1funcs.S ashldi3.S bswapsdi2.S $(libfdt) $(libfdt_hdrs)
 
 ifeq ($(CONFIG_FUNCTION_TRACER),y)
 ORIG_CFLAGS := $(KBUILD_CFLAGS)
@@ -143,6 +147,9 @@ endif
 ifeq ($(CONFIG_CPU_ENDIAN_BE8),y)
 LDFLAGS_vmlinux += --be8
 endif
+ifneq ($(PARAMS_PHYS),)
+LDFLAGS_vmlinux += --defsym params_phys=$(PARAMS_PHYS)
+endif
 # ?
 LDFLAGS_vmlinux += -p
 # Report unresolved symbol references
@@ -153,15 +160,24 @@ LDFLAGS_vmlinux += -X
 LDFLAGS_vmlinux += -T
 
 # For __aeabi_uidivmod
+AFLAGS_lib1funcs.o +=-Wa,-march=armv7-a$(plus_sec)
 lib1funcs = $(obj)/lib1funcs.o
 
 $(obj)/lib1funcs.S: $(srctree)/arch/$(SRCARCH)/lib/lib1funcs.S
 	$(call cmd,shipped)
 
 # For __aeabi_llsl
+AFLAGS_ashldi3.o +=-Wa,-march=armv7-a$(plus_sec)
 ashldi3 = $(obj)/ashldi3.o
 
 $(obj)/ashldi3.S: $(srctree)/arch/$(SRCARCH)/lib/ashldi3.S
+	$(call cmd,shipped)
+
+# For __bswapsi2, __bswapdi2
+AFLAGS_bswapsdi2.o +=-Wa,-march=armv7-a$(plus_sec)
+bswapsdi2 = $(obj)/bswapsdi2.o
+
+$(obj)/bswapsdi2.S: $(srctree)/arch/$(SRCARCH)/lib/bswapsdi2.S
 	$(call cmd,shipped)
 
 # We need to prevent any GOTOFF relocs being used with references
@@ -185,7 +201,8 @@ if [ $(words $(ZRELADDR)) -gt 1 -a "$(CONFIG_AUTO_ZRELADDR)" = "" ]; then \
 fi
 
 $(obj)/vmlinux: $(obj)/vmlinux.lds $(obj)/$(HEAD) $(obj)/piggy.$(suffix_y).o \
-		$(addprefix $(obj)/, $(OBJS)) $(lib1funcs) $(ashldi3) FORCE
+		$(addprefix $(obj)/, $(OBJS)) $(lib1funcs) $(ashldi3) \
+		$(bswapsdi2) FORCE
 	@$(check_for_multiple_zreladdr)
 	$(call if_changed,ld)
 	@$(check_for_bad_syms)
@@ -193,6 +210,7 @@ $(obj)/vmlinux: $(obj)/vmlinux.lds $(obj)/$(HEAD) $(obj)/piggy.$(suffix_y).o \
 $(obj)/piggy.$(suffix_y): $(obj)/../Image FORCE
 	$(call if_changed,$(suffix_y))
 
+AFLAGS_piggy.$(suffix_y).o += -Wa,-march=armv7-a$(plus_sec)
 $(obj)/piggy.$(suffix_y).o:  $(obj)/piggy.$(suffix_y) FORCE
 
 CFLAGS_font.o := -Dstatic=

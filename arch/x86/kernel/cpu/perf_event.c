@@ -484,9 +484,6 @@ static int __x86_pmu_event_init(struct perf_event *event)
 
 	/* mark unused */
 	event->hw.extra_reg.idx = EXTRA_REG_NONE;
-
-	/* mark not used */
-	event->hw.extra_reg.idx = EXTRA_REG_NONE;
 	event->hw.branch_reg.idx = EXTRA_REG_NONE;
 
 	return x86_pmu.hw_config(event);
@@ -1165,6 +1162,9 @@ static void x86_pmu_del(struct perf_event *event, int flags)
 	for (i = 0; i < cpuc->n_events; i++) {
 		if (event == cpuc->event_list[i]) {
 
+			if (i >= cpuc->n_events - cpuc->n_added)
+				--cpuc->n_added;
+
 			if (x86_pmu.put_event_constraints)
 				x86_pmu.put_event_constraints(cpuc, event);
 
@@ -1185,8 +1185,6 @@ int x86_pmu_handle_irq(struct pt_regs *regs)
 	struct perf_event *event;
 	int idx, handled = 0;
 	u64 val;
-
-	perf_sample_data_init(&data, 0);
 
 	cpuc = &__get_cpu_var(cpu_hw_events);
 
@@ -1222,7 +1220,7 @@ int x86_pmu_handle_irq(struct pt_regs *regs)
 		 * event overflow
 		 */
 		handled++;
-		data.period	= event->hw.last_period;
+		perf_sample_data_init(&data, 0, event->hw.last_period);
 
 		if (!x86_perf_event_set_period(event))
 			continue;

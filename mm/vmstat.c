@@ -19,6 +19,9 @@
 #include <linux/math64.h>
 #include <linux/writeback.h>
 #include <linux/compaction.h>
+#include <linux/mm_inline.h>
+
+#include "internal.h"
 
 #ifdef CONFIG_VM_EVENT_COUNTERS
 DEFINE_PER_CPU(struct vm_event_state, vm_event_states) = {{0}};
@@ -725,6 +728,7 @@ const char * const vmstat_text[] = {
 #ifdef CONFIG_UKSM
 	"nr_uksm_zero_pages",
 #endif
+	"nr_swapcache",
 	"nr_dirty_threshold",
 	"nr_dirty_background_threshold",
 
@@ -763,10 +767,14 @@ const char * const vmstat_text[] = {
 
 	"pgrotated",
 
+#ifdef CONFIG_MIGRATION
+	"pgmigrate_success",
+	"pgmigrate_fail",
+#endif
 #ifdef CONFIG_COMPACTION
-	"compact_blocks_moved",
-	"compact_pages_moved",
-	"compact_pagemigrate_failed",
+	"compact_migrate_scanned",
+	"compact_free_scanned",
+	"compact_isolated",
 	"compact_stall",
 	"compact_fail",
 	"compact_success",
@@ -1025,7 +1033,7 @@ static void zoneinfo_show_print(struct seq_file *m, pg_data_t *pgdat,
 		   "\n  all_unreclaimable: %u"
 		   "\n  start_pfn:         %lu"
 		   "\n  inactive_ratio:    %u",
-		   zone->all_unreclaimable,
+		   !zone_reclaimable(zone),
 		   zone->zone_start_pfn,
 		   zone->inactive_ratio);
 	seq_putc(m, '\n');
@@ -1208,10 +1216,12 @@ static int __init setup_vmstat(void)
 #ifdef CONFIG_SMP
 	int cpu;
 
-	register_cpu_notifier(&vmstat_notifier);
+	cpu_notifier_register_begin();
+	__register_cpu_notifier(&vmstat_notifier);
 
 	for_each_online_cpu(cpu)
 		start_cpu_timer(cpu);
+	cpu_notifier_register_done();
 #endif
 #ifdef CONFIG_PROC_FS
 	proc_create("buddyinfo", S_IRUGO, NULL, &fragmentation_file_operations);

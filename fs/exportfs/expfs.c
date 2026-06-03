@@ -50,7 +50,7 @@ find_acceptable_alias(struct dentry *result,
 
 	inode = result->d_inode;
 	spin_lock(&inode->i_lock);
-	list_for_each_entry(dentry, &inode->i_dentry, d_alias) {
+	list_for_each_entry(dentry, &inode->i_dentry, d_u.d_alias) {
 		dget(dentry);
 		spin_unlock(&inode->i_lock);
 		if (toput)
@@ -323,10 +323,10 @@ static int export_encode_fh(struct dentry *dentry, struct fid *fid,
 
 	if (connectable && (len < 4)) {
 		*max_len = 4;
-		return 255;
+		return FILEID_INVALID;
 	} else if (len < 2) {
 		*max_len = 2;
-		return 255;
+		return FILEID_INVALID;
 	}
 
 	len = 2;

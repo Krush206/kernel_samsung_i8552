@@ -101,6 +101,10 @@ struct fs_struct;
 struct perf_event_context;
 struct blk_plug;
 
+#define VMACACHE_BITS 2
+#define VMACACHE_SIZE (1U << VMACACHE_BITS)
+#define VMACACHE_MASK (VMACACHE_SIZE - 1)
+
 /*
  * List of flags we want to share for kernel threads,
  * if only because they are not used by them anyway.
@@ -145,6 +149,7 @@ extern unsigned long this_cpu_load(void);
 
 
 extern void calc_global_load(unsigned long ticks);
+extern void update_cpu_load_nohz(void);
 
 extern unsigned long get_parent_ip(unsigned long addr);
 
@@ -405,6 +410,10 @@ static inline void arch_pick_mmap_layout(struct mm_struct *mm) {}
 extern void set_dumpable(struct mm_struct *mm, int value);
 extern int get_dumpable(struct mm_struct *mm);
 
+#define SUID_DUMP_DISABLE	0	/* No setuid dumping */
+#define SUID_DUMP_USER		1	/* Dump as user of process */
+#define SUID_DUMP_ROOT		2	/* Dump as root */
+
 /* mm flags */
 /* dumpable bits */
 #define MMF_DUMPABLE      0  /* core dump is permitted */
@@ -530,6 +539,7 @@ struct signal_struct {
 	atomic_t		sigcnt;
 	atomic_t		live;
 	int			nr_threads;
+	struct list_head	thread_head;
 
 	wait_queue_head_t	wait_chldexit;	/* for wait4() */
 
@@ -984,6 +994,7 @@ struct sched_domain {
 	unsigned int smt_gain;
 	int flags;			/* See SD_* */
 	int level;
+	int idle_buddy;			/* cpu assigned to select_idle_sibling() */
 
 	/* Runtime fields. */
 	unsigned long last_balance;	/* init to jiffies. units in jiffies */
@@ -991,6 +1002,10 @@ struct sched_domain {
 	unsigned int nr_balance_failed; /* initialise to 0 */
 
 	u64 last_update;
+
+	/* idle_balance() stats */
+	u64 max_newidle_lb_cost;
+	unsigned long next_decay_max_lb_cost;
 
 #ifdef CONFIG_SCHEDSTATS
 	/* load_balance() stats */
@@ -1234,6 +1249,7 @@ struct sched_entity {
 struct sched_rt_entity {
 	struct list_head run_list;
 	unsigned long timeout;
+	unsigned long watchdog_stamp;
 	unsigned int time_slice;
 	int nr_cpus_allowed;
 
@@ -1281,6 +1297,10 @@ struct task_struct {
 	struct sched_entity se;
 	struct sched_rt_entity rt;
 
+#ifdef CONFIG_CGROUP_SCHED
+	struct task_group *sched_task_group;
+#endif
+
 #ifdef CONFIG_PREEMPT_NOTIFIERS
 	/* list of struct preempt_notifier: */
 	struct hlist_head preempt_notifiers;
@@ -1327,6 +1347,9 @@ struct task_struct {
 #ifdef CONFIG_COMPAT_BRK
 	unsigned brk_randomized:1;
 #endif
+	/* per-thread vma caching */
+	u32 vmacache_seqnum;
+	struct vm_area_struct *vmacache[VMACACHE_SIZE];
 #if defined(SPLIT_RSS_COUNTING)
 	struct task_rss_stat	rss_stat;
 #endif
@@ -1342,7 +1365,6 @@ struct task_struct {
 				 * execve */
 	unsigned in_iowait:1;
 
-
 	/* Revert to default priority/policy when forking */
 	unsigned sched_reset_on_fork:1;
 	unsigned sched_contributes_to_load:1;
@@ -1351,6 +1373,8 @@ struct task_struct {
 	/* IRQ handler threads */
 	unsigned irq_thread:1;
 #endif
+
+	unsigned long atomic_flags; /* Flags needing atomic access. */
 
 	pid_t pid;
 	pid_t tgid;
@@ -1385,6 +1409,7 @@ struct task_struct {
 	/* PID/PID hash table linkage. */
 	struct pid_link pids[PIDTYPE_MAX];
 	struct list_head thread_group;
+	struct list_head thread_node;
 
 	struct completion *vfork_done;		/* for vfork() */
 	int __user *set_child_tid;		/* CLONE_CHILD_SETTID */
@@ -1451,7 +1476,7 @@ struct task_struct {
 	uid_t loginuid;
 	unsigned int sessionid;
 #endif
-	seccomp_t seccomp;
+	struct seccomp seccomp;
 
 /* Thread group tracking */
    	u32 parent_exec_id;
@@ -1828,11 +1853,8 @@ extern int task_free_unregister(struct notifier_block *n);
 #define PF_KTHREAD	0x00200000	/* I am a kernel thread */
 #define PF_RANDOMIZE	0x00400000	/* randomize virtual address space */
 #define PF_SWAPWRITE	0x00800000	/* Allowed to write to swap */
-#define PF_SPREAD_PAGE	0x01000000	/* Spread page cache over cpuset */
-#define PF_SPREAD_SLAB	0x02000000	/* Spread some slab caches over cpuset */
 #define PF_THREAD_BOUND	0x04000000	/* Thread bound to specific cpu */
 #define PF_MCE_EARLY    0x08000000      /* Early kill for mce process policy */
-#define PF_MEMPOLICY	0x10000000	/* Non-default NUMA mempolicy */
 #define PF_MUTEX_TESTER	0x20000000	/* Thread belongs to the rt mutex tester */
 #define PF_FREEZER_SKIP	0x40000000	/* Freezer should not count it as freezable */
 
@@ -1860,6 +1882,32 @@ extern int task_free_unregister(struct notifier_block *n);
 /* NOTE: this will return 0 or PF_USED_MATH, it will never return 1 */
 #define tsk_used_math(p) ((p)->flags & PF_USED_MATH)
 #define used_math() tsk_used_math(current)
+
+/* Per-process atomic flags. */
+#define PFA_SPREAD_PAGE  1      /* Spread page cache over cpuset */
+#define PFA_SPREAD_SLAB  2      /* Spread some slab caches over cpuset */
+
+#define TASK_PFA_TEST(name, func)					\
+	static inline bool task_##func(struct task_struct *p)		\
+	{ return test_bit(PFA_##name, &p->atomic_flags); }
+#define TASK_PFA_SET(name, func)					\
+	static inline void task_set_##func(struct task_struct *p)	\
+	{ set_bit(PFA_##name, &p->atomic_flags); }
+#define TASK_PFA_CLEAR(name, func)					\
+	static inline void task_clear_##func(struct task_struct *p)	\
+	{ clear_bit(PFA_##name, &p->atomic_flags); }
+
+#define PFA_NO_NEW_PRIVS 0x00000001	/* May not gain new privileges. */
+
+static inline bool task_no_new_privs(struct task_struct *p)
+{
+	return test_bit(PFA_NO_NEW_PRIVS, &p->atomic_flags);
+}
+
+static inline void task_set_no_new_privs(struct task_struct *p)
+{
+	set_bit(PFA_NO_NEW_PRIVS, &p->atomic_flags);
+}
 
 /*
  * task->jobctl flags
@@ -1917,6 +1965,13 @@ static inline void rcu_copy_process(struct task_struct *p)
 
 #endif
 
+static inline void tsk_restore_flags(struct task_struct *task,
+				unsigned long orig_flags, unsigned long flags)
+{
+	task->flags &= ~flags;
+	task->flags |= orig_flags & flags;
+}
+
 #ifdef CONFIG_SMP
 extern void do_set_cpus_allowed(struct task_struct *p,
 			       const struct cpumask *new_mask);
@@ -1943,6 +1998,14 @@ static inline int set_cpus_allowed(struct task_struct *p, cpumask_t new_mask)
 	return set_cpus_allowed_ptr(p, &new_mask);
 }
 #endif
+
+TASK_PFA_TEST(SPREAD_PAGE, spread_page)
+TASK_PFA_SET(SPREAD_PAGE, spread_page)
+TASK_PFA_CLEAR(SPREAD_PAGE, spread_page)
+
+TASK_PFA_TEST(SPREAD_SLAB, spread_slab)
+TASK_PFA_SET(SPREAD_SLAB, spread_slab)
+TASK_PFA_CLEAR(SPREAD_SLAB, spread_slab)
 
 /*
  * Do not use outside of architecture code which knows its limitations.
@@ -2293,7 +2356,7 @@ static inline void mmdrop(struct mm_struct * mm)
 }
 
 /* mmput gets rid of the mappings and all user-space */
-extern void mmput(struct mm_struct *);
+extern int mmput(struct mm_struct *);
 /* Grab a reference to a task's mm, if it is not already going away */
 extern struct mm_struct *get_task_mm(struct task_struct *task);
 /*
@@ -2362,6 +2425,16 @@ extern bool current_is_single_threaded(void);
 
 #define while_each_thread(g, t) \
 	while ((t = next_thread(t)) != g)
+
+#define __for_each_thread(signal, t)	\
+	list_for_each_entry_rcu(t, &(signal)->thread_head, thread_node)
+
+#define for_each_thread(p, t)		\
+	__for_each_thread((p)->signal, t)
+
+/* Careful: this is a double loop, 'break' won't work as expected. */
+#define for_each_process_thread(p, t)	\
+	for_each_process(p) for_each_thread(p, t)
 
 static inline int get_nr_threads(struct task_struct *tsk)
 {
@@ -2688,7 +2761,16 @@ static inline void thread_group_cputime_init(struct signal_struct *sig)
 extern void recalc_sigpending_and_wake(struct task_struct *t);
 extern void recalc_sigpending(void);
 
-extern void signal_wake_up(struct task_struct *t, int resume_stopped);
+extern void signal_wake_up_state(struct task_struct *t, unsigned int state);
+
+static inline void signal_wake_up(struct task_struct *t, bool resume)
+{
+	signal_wake_up_state(t, resume ? TASK_WAKEKILL : 0);
+}
+static inline void ptrace_signal_wake_up(struct task_struct *t, bool resume)
+{
+	signal_wake_up_state(t, resume ? __TASK_TRACED : 0);
+}
 
 /*
  * Wrappers for p->thread_info->cpu access. No-op on UP.
@@ -2715,6 +2797,16 @@ static inline void set_task_cpu(struct task_struct *p, unsigned int cpu)
 
 #endif /* CONFIG_SMP */
 
+#ifdef CONFIG_NO_HZ
+void calc_load_enter_idle(void);
+void calc_load_exit_idle(void);
+#else
+static inline void calc_load_enter_idle(void) { }
+static inline void calc_load_exit_idle(void) { }
+#endif /* CONFIG_NO_HZ */
+
+extern struct atomic_notifier_head migration_notifier_head;
+
 extern long sched_setaffinity(pid_t pid, const struct cpumask *new_mask);
 extern long sched_getaffinity(pid_t pid, struct cpumask *mask);
 
@@ -2740,7 +2832,7 @@ extern int sched_group_set_rt_period(struct task_group *tg,
 extern long sched_group_rt_period(struct task_group *tg);
 extern int sched_rt_can_attach(struct task_group *tg, struct task_struct *tsk);
 #endif
-#endif
+#endif /* CONFIG_CGROUP_SCHED */
 
 extern int task_can_switch_user(struct user_struct *up,
 					struct task_struct *tsk);

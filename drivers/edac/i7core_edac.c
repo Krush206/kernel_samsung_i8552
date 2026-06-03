@@ -90,7 +90,7 @@ MODULE_PARM_DESC(use_pci_fixup, "Enable PCI fixup to seek for hidden devices");
 #define MC_MAX_DOD	0x64
 
 /*
- * OFFSETS for Device 3 Function 4, as inicated on Xeon 5500 datasheet:
+ * OFFSETS for Device 3 Function 4, as indicated on Xeon 5500 datasheet:
  * http://www.arrownac.com/manufacturers/intel/s/nehalem/5500-datasheet-v2.pdf
  */
 
@@ -101,7 +101,7 @@ MODULE_PARM_DESC(use_pci_fixup, "Enable PCI fixup to seek for hidden devices");
   #define DIMM1_COR_ERR(r)			(((r) >> 16) & 0x7fff)
   #define DIMM0_COR_ERR(r)			((r) & 0x7fff)
 
-/* OFFSETS for Device 3 Function 2, as inicated on Xeon 5500 datasheet */
+/* OFFSETS for Device 3 Function 2, as indicated on Xeon 5500 datasheet */
 #define MC_SSRCONTROL		0x48
   #define SSR_MODE_DISABLE	0x00
   #define SSR_MODE_ENABLE	0x01
@@ -398,7 +398,7 @@ static DEFINE_PCI_DEVICE_TABLE(i7core_pci_tbl) = {
 };
 
 /****************************************************************************
-			Anciliary status routines
+			Ancillary status routines
  ****************************************************************************/
 
 	/* MC_CONTROL bits */
@@ -1361,18 +1361,23 @@ static int i7core_get_onedevice(struct pci_dev **prev,
 			      dev_descr->dev_id, *prev);
 
 	/*
-	 * On Xeon 55xx, the Intel Quckpath Arch Generic Non-core regs
+	 * On Xeon 55xx, the Intel QuickPath Arch Generic Non-core regs
 	 * is at addr 8086:2c40, instead of 8086:2c41. So, we need
 	 * to probe for the alternate address in case of failure
 	 */
-	if (dev_descr->dev_id == PCI_DEVICE_ID_INTEL_I7_NONCORE && !pdev)
+	if (dev_descr->dev_id == PCI_DEVICE_ID_INTEL_I7_NONCORE && !pdev) {
+		pci_dev_get(*prev);	/* pci_get_device will put it */
 		pdev = pci_get_device(PCI_VENDOR_ID_INTEL,
 				      PCI_DEVICE_ID_INTEL_I7_NONCORE_ALT, *prev);
+	}
 
-	if (dev_descr->dev_id == PCI_DEVICE_ID_INTEL_LYNNFIELD_NONCORE && !pdev)
+	if (dev_descr->dev_id == PCI_DEVICE_ID_INTEL_LYNNFIELD_NONCORE &&
+	    !pdev) {
+		pci_dev_get(*prev);	/* pci_get_device will put it */
 		pdev = pci_get_device(PCI_VENDOR_ID_INTEL,
 				      PCI_DEVICE_ID_INTEL_LYNNFIELD_NONCORE_ALT,
 				      *prev);
+	}
 
 	if (!pdev) {
 		if (*prev) {
@@ -1932,12 +1937,6 @@ static int i7core_mce_check_error(struct notifier_block *nb, unsigned long val,
 	if (mce->bank != 8)
 		return NOTIFY_DONE;
 
-#ifdef CONFIG_SMP
-	/* Only handle if it is the right mc controller */
-	if (mce->socketid != pvt->i7core_dev->socket)
-		return NOTIFY_DONE;
-#endif
-
 	smp_rmb();
 	if ((pvt->mce_out + 1) % MCE_LOG_LEN == pvt->mce_in) {
 		smp_wmb();
@@ -2132,7 +2131,7 @@ static int set_sdram_scrub_rate(struct mem_ctl_info *mci, u32 new_bw)
 
 /*
  * get_sdram_scrub_rate		This routine convert current scrub rate value
- *				into byte/sec bandwidth accourding to
+ *				into byte/sec bandwidth according to
  *				SCRUBINTERVAL formula found in datasheet.
  */
 static int get_sdram_scrub_rate(struct mem_ctl_info *mci)
@@ -2234,8 +2233,6 @@ static void i7core_unregister_mci(struct i7core_dev *i7core_dev)
 	if (pvt->enable_scrub)
 		disable_sdram_scrub_setting(mci);
 
-	mce_unregister_decode_chain(&i7_mce_dec);
-
 	/* Disable EDAC polling */
 	i7core_pci_ctl_release(pvt);
 
@@ -2335,8 +2332,6 @@ static int i7core_register_mci(struct i7core_dev *i7core_dev)
 
 	/* DCLK for scrub rate setting */
 	pvt->dclk_freq = get_dclk_freq();
-
-	mce_register_decode_chain(&i7_mce_dec);
 
 	return 0;
 
@@ -2481,8 +2476,10 @@ static int __init i7core_init(void)
 
 	pci_rc = pci_register_driver(&i7core_driver);
 
-	if (pci_rc >= 0)
+	if (pci_rc >= 0) {
+		mce_register_decode_chain(&i7_mce_dec);
 		return 0;
+	}
 
 	i7core_printk(KERN_ERR, "Failed to register device with error %d.\n",
 		      pci_rc);
@@ -2498,6 +2495,7 @@ static void __exit i7core_exit(void)
 {
 	debugf2("MC: " __FILE__ ": %s()\n", __func__);
 	pci_unregister_driver(&i7core_driver);
+	mce_unregister_decode_chain(&i7_mce_dec);
 }
 
 module_init(i7core_init);

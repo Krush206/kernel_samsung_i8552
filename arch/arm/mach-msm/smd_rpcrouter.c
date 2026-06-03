@@ -306,6 +306,10 @@ static void modem_reset_cleanup(struct rpcrouter_xprt_info *xprt_info)
 	struct msm_rpc_reply *reply, *reply_tmp;
 	unsigned long flags;
 
+	if (!xprt_info) {
+		pr_err("%s: Invalid xprt_info\n", __func__);
+		return;
+	}
 	spin_lock_irqsave(&local_endpoints_lock, flags);
 	/* remove all partial packets received */
 	list_for_each_entry(ept, &local_endpoints, list) {
@@ -1755,7 +1759,7 @@ int msm_rpc_call_reply(struct msm_rpc_endpoint *ept, uint32_t proc,
 		       long timeout)
 {
 	struct rpc_request_hdr *req = _request;
-	struct rpc_reply_hdr *reply;
+	struct rpc_reply_hdr *reply = NULL;
 	int rc;
 
 	if (request_size < sizeof(*req))
@@ -2169,6 +2173,7 @@ static int msm_rpcrouter_close(void)
 	while (!list_empty(&xprt_info_list)) {
 		xprt_info = list_first_entry(&xprt_info_list,
 					struct rpcrouter_xprt_info, list);
+		modem_reset_cleanup(xprt_info);
 		xprt_info->abort_data_read = 1;
 		wake_up(&xprt_info->read_wait);
 		rpcrouter_send_control_msg(xprt_info, &ctl);
@@ -2179,6 +2184,8 @@ static int msm_rpcrouter_close(void)
 		flush_workqueue(xprt_info->workqueue);
 		destroy_workqueue(xprt_info->workqueue);
 		wake_lock_destroy(&xprt_info->wakelock);
+		/*free memory*/
+		xprt_info->xprt->priv = 0;
 		kfree(xprt_info);
 
 		mutex_lock(&xprt_info_list_lock);

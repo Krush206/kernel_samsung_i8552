@@ -911,7 +911,7 @@ static unsigned int cache_poll(struct file *filp, poll_table *wait,
 	poll_wait(filp, &queue_wait, wait);
 
 	/* alway allow write */
-	mask = POLL_OUT | POLLWRNORM;
+	mask = POLLOUT | POLLWRNORM;
 
 	if (!rp)
 		return mask;
@@ -1201,7 +1201,6 @@ EXPORT_SYMBOL_GPL(sunrpc_cache_pipe_upcall);
  * key and content are both parsed by cache
  */
 
-#define isodigit(c) (isdigit(c) && c <= '7')
 int qword_get(char **bpp, char *dest, int bufsize)
 {
 	/* return bytes copied, or -1 on error */
@@ -1406,11 +1405,11 @@ static ssize_t read_flush(struct file *file, char __user *buf,
 			  size_t count, loff_t *ppos,
 			  struct cache_detail *cd)
 {
-	char tbuf[20];
+	char tbuf[22];
 	unsigned long p = *ppos;
 	size_t len;
 
-	sprintf(tbuf, "%lu\n", convert_to_wallclock(cd->flush_time));
+	snprintf(tbuf, sizeof(tbuf), "%lu\n", convert_to_wallclock(cd->flush_time));
 	len = strlen(tbuf);
 	if (p >= len)
 		return 0;

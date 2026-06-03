@@ -72,43 +72,7 @@ static int elv_iosched_allow_merge(struct request *rq, struct bio *bio)
  */
 bool elv_rq_merge_ok(struct request *rq, struct bio *bio)
 {
-	if (!rq_mergeable(rq))
-		return 0;
-
-	/*
-	 * Don't merge file system requests and discard requests
-	 */
-	if ((bio->bi_rw & REQ_DISCARD) != (rq->bio->bi_rw & REQ_DISCARD))
-		return 0;
-
-	/*
-	 * Don't merge discard requests and secure discard requests
-	 */
-	if ((bio->bi_rw & REQ_SECURE) != (rq->bio->bi_rw & REQ_SECURE))
-		return 0;
-
-	/*
-	 * Don't merge sanitize requests
-	 */
-	if ((bio->bi_rw & REQ_SANITIZE) != (rq->bio->bi_rw & REQ_SANITIZE))
-		return 0;
-
-	/*
-	 * different data direction or already started, don't merge
-	 */
-	if (bio_data_dir(bio) != rq_data_dir(rq))
-		return 0;
-
-	/*
-	 * must be same device and not a special request
-	 */
-	if (rq->rq_disk != bio->bi_bdev->bd_disk || rq->special)
-		return 0;
-
-	/*
-	 * only merge integrity protected bio into ditto rq
-	 */
-	if (bio_integrity(bio) != blk_integrity_rq(rq))
+	if (!blk_rq_merge_ok(rq, bio))
 		return 0;
 
 	if (!elv_iosched_allow_merge(rq, bio))
@@ -853,6 +817,8 @@ int __elv_register_queue(struct request_queue *q, struct elevator_queue *e)
 		}
 		kobject_uevent(&e->kobj, KOBJ_ADD);
 		e->registered = 1;
+		if (e->type->ops.elevator_registered_fn)
+			e->type->ops.elevator_registered_fn(q);
 	}
 	return error;
 }
@@ -997,7 +963,7 @@ fail_register:
 /*
  * Switch this queue to the given IO scheduler.
  */
-int elevator_change(struct request_queue *q, const char *name)
+static int __elevator_change(struct request_queue *q, const char *name)
 {
 	char elevator_name[ELV_NAME_MAX];
 	struct elevator_type *e;
@@ -1019,6 +985,18 @@ int elevator_change(struct request_queue *q, const char *name)
 
 	return elevator_switch(q, e);
 }
+
+int elevator_change(struct request_queue *q, const char *name)
+{
+	int ret;
+
+	/* Protect q->elevator from elevator_init() */
+	mutex_lock(&q->sysfs_lock);
+	ret = __elevator_change(q, name);
+	mutex_unlock(&q->sysfs_lock);
+
+	return ret;
+}
 EXPORT_SYMBOL(elevator_change);
 
 ssize_t elv_iosched_store(struct request_queue *q, const char *name,
@@ -1029,7 +1007,7 @@ ssize_t elv_iosched_store(struct request_queue *q, const char *name,
 	if (!q->elevator)
 		return count;
 
-	ret = elevator_change(q, name);
+	ret = __elevator_change(q, name);
 	if (!ret)
 		return count;
 

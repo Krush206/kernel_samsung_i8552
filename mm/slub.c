@@ -1514,15 +1514,19 @@ static inline void *acquire_slab(struct kmem_cache *s,
 		freelist = page->freelist;
 		counters = page->counters;
 		new.counters = counters;
-		if (mode)
+		if (mode) {
 			new.inuse = page->objects;
+			new.freelist = NULL;
+		} else {
+			new.freelist = freelist;
+		}
 
 		VM_BUG_ON(new.frozen);
 		new.frozen = 1;
 
 	} while (!__cmpxchg_double_slab(s, page,
 			freelist, counters,
-			NULL, new.counters,
+			new.freelist, new.counters,
 			"lock and freeze"));
 
 	remove_partial(n, page);
@@ -1564,7 +1568,6 @@ static void *get_partial_node(struct kmem_cache *s,
 			object = t;
 			available =  page->objects - page->inuse;
 		} else {
-			page->freelist = t;
 			available = put_cpu_partial(s, page, 0);
 			stat(s, CPU_PARTIAL_NODE);
 		}
@@ -1614,7 +1617,7 @@ static struct page *get_any_partial(struct kmem_cache *s, gfp_t flags,
 
 	do {
 		cpuset_mems_cookie = get_mems_allowed();
-		zonelist = node_zonelist(slab_node(current->mempolicy), flags);
+		zonelist = node_zonelist(slab_node(), flags);
 		for_each_zone_zonelist(zone, z, zonelist, high_zoneidx) {
 			struct kmem_cache_node *n;
 
@@ -1879,18 +1882,24 @@ redo:
 /* Unfreeze all the cpu partial slabs */
 static void unfreeze_partials(struct kmem_cache *s)
 {
-	struct kmem_cache_node *n = NULL;
+	struct kmem_cache_node *n = NULL, *n2 = NULL;
 	struct kmem_cache_cpu *c = this_cpu_ptr(s->cpu_slab);
 	struct page *page, *discard_page = NULL;
 
 	while ((page = c->partial)) {
-		enum slab_modes { M_PARTIAL, M_FREE };
-		enum slab_modes l, m;
 		struct page new;
 		struct page old;
 
 		c->partial = page->next;
-		l = M_FREE;
+
+		n2 = get_node(s, page_to_nid(page));
+		if (n != n2) {
+			if (n)
+				spin_unlock(&n->list_lock);
+
+			n = n2;
+			spin_lock(&n->list_lock);
+		}
 
 		do {
 
@@ -1903,43 +1912,17 @@ static void unfreeze_partials(struct kmem_cache *s)
 
 			new.frozen = 0;
 
-			if (!new.inuse && (!n || n->nr_partial > s->min_partial))
-				m = M_FREE;
-			else {
-				struct kmem_cache_node *n2 = get_node(s,
-							page_to_nid(page));
-
-				m = M_PARTIAL;
-				if (n != n2) {
-					if (n)
-						spin_unlock(&n->list_lock);
-
-					n = n2;
-					spin_lock(&n->list_lock);
-				}
-			}
-
-			if (l != m) {
-				if (l == M_PARTIAL) {
-					remove_partial(n, page);
-					stat(s, FREE_REMOVE_PARTIAL);
-				} else {
-					add_partial(n, page,
-						DEACTIVATE_TO_TAIL);
-					stat(s, FREE_ADD_PARTIAL);
-				}
-
-				l = m;
-			}
-
 		} while (!cmpxchg_double_slab(s, page,
 				old.freelist, old.counters,
 				new.freelist, new.counters,
 				"unfreezing slab"));
 
-		if (m == M_FREE) {
+		if (unlikely(!new.inuse && n->nr_partial > s->min_partial)) {
 			page->next = discard_page;
 			discard_page = page;
+		} else {
+			add_partial(n, page, DEACTIVATE_TO_TAIL);
+			stat(s, FREE_ADD_PARTIAL);
 		}
 	}
 
@@ -2310,13 +2293,18 @@ static __always_inline void *slab_alloc(struct kmem_cache *s,
 		return NULL;
 
 redo:
-
 	/*
 	 * Must read kmem_cache cpu data via this cpu ptr. Preemption is
 	 * enabled. We may switch back and forth between cpus while
 	 * reading from one cpu area. That does not matter as long
 	 * as we end up on the original cpu again when doing the cmpxchg.
+	 *
+	 * Preemption is disabled for the retrieval of the tid because that
+	 * must occur from the current processor. We cannot allow rescheduling
+	 * on a different processor between the determination of the pointer
+	 * and the retrieval of the tid.
 	 */
+	preempt_disable();
 	c = __this_cpu_ptr(s->cpu_slab);
 
 	/*
@@ -2326,7 +2314,7 @@ redo:
 	 * linked list in between.
 	 */
 	tid = c->tid;
-	barrier();
+	preempt_enable();
 
 	object = c->freelist;
 	if (unlikely(!object || !node_match(c, node)))
@@ -2572,10 +2560,11 @@ redo:
 	 * data is retrieved via this pointer. If we are on the same cpu
 	 * during the cmpxchg then the free will succedd.
 	 */
+	preempt_disable();
 	c = __this_cpu_ptr(s->cpu_slab);
 
 	tid = c->tid;
-	barrier();
+	preempt_enable();
 
 	if (likely(page == c->page)) {
 		set_freepointer(s, object, c->freelist);
@@ -2626,7 +2615,7 @@ EXPORT_SYMBOL(kmem_cache_free);
  * take the list_lock.
  */
 static int slub_min_order;
-static int slub_max_order = PAGE_ALLOC_COSTLY_ORDER;
+static int slub_max_order;
 static int slub_min_objects;
 
 /*
@@ -4517,7 +4506,13 @@ static ssize_t show_slab_objects(struct kmem_cache *s,
 			page = c->partial;
 
 			if (page) {
-				x = page->pobjects;
+				node = page_to_nid(page);
+				if (flags & SO_TOTAL)
+					WARN_ON_ONCE(1);
+				else if (flags & SO_OBJECTS)
+					WARN_ON_ONCE(1);
+				else
+					x = page->pages;
 				total += x;
 				nodes[node] += x;
 			}

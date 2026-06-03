@@ -28,8 +28,8 @@ config FS_MBCACHE
 	tristate
 	default y if EXT2_FS=y && EXT2_FS_XATTR
 	default y if EXT3_FS=y && EXT3_FS_XATTR
-	default y if EXT4_FS=y && EXT4_FS_XATTR
-	default m if EXT2_FS_XATTR || EXT3_FS_XATTR || EXT4_FS_XATTR
+	default y if EXT4_FS=y
+	default m if EXT2_FS_XATTR || EXT3_FS_XATTR || EXT4_FS
 
 source "fs/reiserfs/Kconfig"
 source "fs/jfs/Kconfig"
@@ -178,12 +178,6 @@ config HUGETLB_PAGE
 
 source "fs/configfs/Kconfig"
 
-config DYNAMIC_FSYNC
-	bool "dynamic file sync control"
-	default n
-	help
-	  An experimental file sync control using Android's early suspend / late resume drivers
-
 endmenu
 
 menuconfig MISC_FILESYSTEMS
@@ -204,6 +198,7 @@ if MISC_FILESYSTEMS
 source "fs/adfs/Kconfig"
 source "fs/affs/Kconfig"
 source "fs/ecryptfs/Kconfig"
+source "fs/sdcardfs/Kconfig"
 source "fs/hfs/Kconfig"
 source "fs/hfsplus/Kconfig"
 source "fs/befs/Kconfig"
@@ -286,5 +281,15 @@ endif # NETWORK_FILESYSTEMS
 
 source "fs/nls/Kconfig"
 source "fs/dlm/Kconfig"
+
+config DYNAMIC_FSYNC
+	bool "dynamic file sync control"
+	default n
+	help
+	  An experimental file sync control using Android's early suspend / late resume drivers
+
+config ASYNC_FSYNC
+	bool "asynchronous fsync"
+	default y
 
 endmenu

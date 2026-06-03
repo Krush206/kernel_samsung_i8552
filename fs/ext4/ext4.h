@@ -205,7 +205,6 @@ typedef struct ext4_io_end {
 	struct list_head	list;		/* per-file finished IO list */
 	struct inode		*inode;		/* file being written to */
 	unsigned int		flag;		/* unwritten or not */
-	struct page		*page;		/* for writepage() path */
 	loff_t			offset;		/* offset in the file */
 	ssize_t			size;		/* size of the extent */
 	struct work_struct	work;		/* data work queue */
@@ -316,9 +315,9 @@ struct ext4_group_desc
  */
 
 struct flex_groups {
-	atomic_t free_inodes;
-	atomic_t free_clusters;
-	atomic_t used_dirs;
+	atomic64_t	free_clusters;
+	atomic_t	free_inodes;
+	atomic_t	used_dirs;
 };
 
 #define EXT4_BG_INODE_UNINIT	0x0001 /* Inode table/bitmap not in use */
@@ -751,6 +750,8 @@ do {									       \
 	if (EXT4_FITS_IN_INODE(raw_inode, einode, xtime))		       \
 		(einode)->xtime.tv_sec = 				       \
 			(signed)le32_to_cpu((raw_inode)->xtime);	       \
+	else								       \
+		(einode)->xtime.tv_sec = 0;				       \
 	if (EXT4_FITS_IN_INODE(raw_inode, einode, xtime ## _extra))	       \
 		ext4_decode_extra_time(&(einode)->xtime,		       \
 				       raw_inode->xtime ## _extra);	       \
@@ -818,7 +819,6 @@ struct ext4_inode_info {
 #endif
 	unsigned long	i_flags;
 
-#ifdef CONFIG_EXT4_FS_XATTR
 	/*
 	 * Extended attributes can be read independently of the main file
 	 * data. Taking i_mutex even when reading would cause contention
@@ -827,7 +827,6 @@ struct ext4_inode_info {
 	 * EAs.
 	 */
 	struct rw_semaphore xattr_sem;
-#endif
 
 	struct list_head i_orphan;	/* unlinked but open inodes */
 
@@ -951,7 +950,6 @@ struct ext4_inode_info {
 #define EXT4_MOUNT_DIOREAD_NOLOCK	0x400000 /* Enable support for dio read nolocking */
 #define EXT4_MOUNT_JOURNAL_CHECKSUM	0x800000 /* Journal checksums */
 #define EXT4_MOUNT_JOURNAL_ASYNC_COMMIT	0x1000000 /* Journal Async Commit */
-#define EXT4_MOUNT_MBLK_IO_SUBMIT	0x4000000 /* multi-block io submits */
 #define EXT4_MOUNT_DELALLOC		0x8000000 /* Delalloc support */
 #define EXT4_MOUNT_DATA_ERR_ABORT	0x10000000 /* Abort on file data write */
 #define EXT4_MOUNT_BLOCK_VALIDITY	0x20000000 /* Block validity checking */
@@ -1140,8 +1138,7 @@ struct ext4_sb_info {
 	unsigned long s_desc_per_block;	/* Number of group descriptors per block */
 	ext4_group_t s_groups_count;	/* Number of groups in the fs */
 	ext4_group_t s_blockfile_groups;/* Groups acceptable for non-extent files */
-	unsigned long s_overhead_last;  /* Last calculated overhead */
-	unsigned long s_blocks_last;    /* Last seen block count */
+	unsigned long s_overhead;  /* # of fs overhead clusters */
 	unsigned int s_cluster_ratio;	/* Number of blocks per cluster */
 	unsigned int s_cluster_bits;	/* log2 of s_cluster_ratio */
 	loff_t s_bitmap_maxbytes;	/* max bytes for bitmap files */
@@ -1314,6 +1311,7 @@ enum {
 	EXT4_STATE_DIO_UNWRITTEN,	/* need convert on dio done*/
 	EXT4_STATE_NEWENTRY,		/* File just added to dir */
 	EXT4_STATE_DELALLOC_RESERVED,	/* blks already reserved for delalloc */
+	EXT4_STATE_ORDERED_MODE,	/* data=ordered mode */
 };
 
 #define EXT4_INODE_BIT_FNS(name, field, offset)				\
@@ -1673,7 +1671,7 @@ ext4_group_first_block_no(struct super_block *sb, ext4_group_t group_no)
 /*
  * Special error return code only used by dx_probe() and its callers.
  */
-#define ERR_BAD_DX_DIR	-75000
+#define ERR_BAD_DX_DIR	(-(MAX_ERRNO - 1))
 
 void ext4_get_group_no_and_offset(struct super_block *sb, ext4_fsblk_t blocknr,
 			ext4_group_t *blockgrpp, ext4_grpblk_t *offsetp);
@@ -1783,7 +1781,7 @@ struct mmpd_data {
 # define NORET_AND	noreturn,
 
 /* bitmap.c */
-extern unsigned int ext4_count_free(struct buffer_head *, unsigned);
+extern unsigned int ext4_count_free(char *bitmap, unsigned numchars);
 
 /* balloc.c */
 extern unsigned int ext4_block_group(struct super_block *sb,
@@ -1864,7 +1862,7 @@ extern void ext4_end_bitmap_read(struct buffer_head *bh, int uptodate);
 /* mballoc.c */
 extern long ext4_mb_stats;
 extern long ext4_mb_max_to_scan;
-extern int ext4_mb_init(struct super_block *, int);
+extern int ext4_mb_init(struct super_block *);
 extern int ext4_mb_release(struct super_block *);
 extern ext4_fsblk_t ext4_mb_new_blocks(handle_t *,
 				struct ext4_allocation_request *, int *);
@@ -1879,7 +1877,8 @@ extern int ext4_mb_add_groupinfo(struct super_block *sb,
 		ext4_group_t i, struct ext4_group_desc *desc);
 extern int ext4_group_add_blocks(handle_t *handle, struct super_block *sb,
 				ext4_fsblk_t block, unsigned long count);
-extern int ext4_trim_fs(struct super_block *, struct fstrim_range *);
+extern int ext4_trim_fs(struct super_block *, struct fstrim_range *,
+				unsigned long blkdev_flags);
 
 /* inode.c */
 struct buffer_head *ext4_getblk(handle_t *, struct inode *,
@@ -1890,6 +1889,7 @@ int ext4_get_block(struct inode *inode, sector_t iblock,
 				struct buffer_head *bh_result, int create);
 
 extern struct inode *ext4_iget(struct super_block *, unsigned long);
+extern struct inode *ext4_iget_normal(struct super_block *, unsigned long);
 extern int  ext4_write_inode(struct inode *, struct writeback_control *);
 extern int  ext4_setattr(struct dentry *, struct iattr *);
 extern int  ext4_getattr(struct vfsmount *mnt, struct dentry *dentry,
@@ -1950,6 +1950,7 @@ extern int ext4_group_extend(struct super_block *sb,
 extern int ext4_resize_fs(struct super_block *sb, ext4_fsblk_t n_blocks_count);
 
 /* super.c */
+extern int ext4_calculate_overhead(struct super_block *sb);
 extern void *ext4_kvmalloc(size_t size, gfp_t flags);
 extern void *ext4_kvzalloc(size_t size, gfp_t flags);
 extern void ext4_kvfree(void *ptr);
@@ -2029,6 +2030,11 @@ extern __le16 ext4_group_desc_csum(struct ext4_sb_info *sbi, __u32 group,
 				   struct ext4_group_desc *gdp);
 extern int ext4_group_desc_csum_verify(struct ext4_sb_info *sbi, __u32 group,
 				       struct ext4_group_desc *gdp);
+extern void print_bh(struct super_block *sb,
+			struct buffer_head *bh, int start, int len);
+extern void print_block_data(struct super_block *sb, sector_t blocknr,
+			unsigned char *data_to_dump, int start, int len);
+
 
 static inline ext4_fsblk_t ext4_blocks_count(struct ext4_super_block *es)
 {

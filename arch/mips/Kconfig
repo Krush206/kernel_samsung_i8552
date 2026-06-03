@@ -24,11 +24,13 @@ config MIPS
 	select HAVE_GENERIC_HARDIRQS
 	select GENERIC_IRQ_PROBE
 	select GENERIC_IRQ_SHOW
+	select GENERIC_PCI_IOMAP
 	select HAVE_ARCH_JUMP_LABEL
 	select IRQ_FORCED_THREADING
 	select HAVE_MEMBLOCK
 	select HAVE_MEMBLOCK_NODE_MAP
 	select ARCH_DISCARD_MEMBLOCK
+	select BUILDTIME_EXTABLE_SORT
 
 menu "Machine selection"
 
@@ -1001,12 +1003,12 @@ config HOLES_IN_ZONE
 	bool
 
 #
-# Endianess selection.  Sufficiently obscure so many users don't know what to
+# Endianness selection.  Sufficiently obscure so many users don't know what to
 # answer,so we try hard to limit the available choices.  Also the use of a
 # choice statement should be more obvious to the user.
 #
 choice
-	prompt "Endianess selection"
+	prompt "Endianness selection"
 	help
 	  Some MIPS machines can be configured for either little or big endian
 	  byte order. These modes require different kernels and a different
@@ -2356,7 +2358,6 @@ config PCI
 	bool "Support for PCI controller"
 	depends on HW_HAS_PCI
 	select PCI_DOMAINS
-	select GENERIC_PCI_IOMAP
 	select NO_GENERIC_PCI_IOPORT_MAP
 	help
 	  Find out whether you have a PCI motherboard. PCI is the name of a

@@ -3735,9 +3735,9 @@ qla2x00_do_dpc(void *data)
 			    "ISP abort end.\n");
 		}
 
-		if (test_bit(FCPORT_UPDATE_NEEDED, &base_vha->dpc_flags)) {
+		if (test_and_clear_bit(FCPORT_UPDATE_NEEDED,
+		    &base_vha->dpc_flags)) {
 			qla2x00_update_fcports(base_vha);
-			clear_bit(FCPORT_UPDATE_NEEDED, &base_vha->dpc_flags);
 		}
 
 		if (test_bit(ISP_QUIESCE_NEEDED, &base_vha->dpc_flags)) {
@@ -4122,8 +4122,7 @@ qla2x00_release_firmware(void)
 
 	mutex_lock(&qla_fw_lock);
 	for (idx = 0; idx < FW_BLOBS; idx++)
-		if (qla_fw_blobs[idx].fw)
-			release_firmware(qla_fw_blobs[idx].fw);
+		release_firmware(qla_fw_blobs[idx].fw);
 	mutex_unlock(&qla_fw_lock);
 }
 

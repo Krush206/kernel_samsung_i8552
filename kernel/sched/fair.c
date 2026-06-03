@@ -33,7 +33,7 @@
 
 /*
  * Targeted preemption latency for CPU-bound tasks:
- * (default: 20ms * (1 + ilog(ncpus)), units: nanoseconds)
+ * (default: 5ms * (1 + ilog(ncpus)), units: nanoseconds)
  *
  * NOTE: this latency value is not the same as the concept of
  * 'timeslice length' - timeslices in CFS are of variable length
@@ -43,8 +43,8 @@
  * (to see the precise effective timeslice length of your workload,
  *  run vmstat and monitor the context-switches (cs) field)
  */
-unsigned int sysctl_sched_latency = 20000000ULL;
-unsigned int normalized_sysctl_sched_latency = 20000000ULL;
+unsigned int sysctl_sched_latency = 5000000ULL;
+unsigned int normalized_sysctl_sched_latency = 5000000ULL;
 
 /*
  * The initial- and re-scaling of tunables is configurable
@@ -60,10 +60,10 @@ enum sched_tunable_scaling sysctl_sched_tunable_scaling
 
 /*
  * Minimal preemption granularity for CPU-bound tasks:
- * (default: 4 msec * (1 + ilog(ncpus)), units: nanoseconds)
+ * (default: 0.75 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
-unsigned int sysctl_sched_min_granularity = 4000000ULL;
-unsigned int normalized_sysctl_sched_min_granularity = 4000000ULL;
+unsigned int sysctl_sched_min_granularity = 750000ULL;
+unsigned int normalized_sysctl_sched_min_granularity = 750000ULL;
 
 /*
  * is kept at sysctl_sched_latency / sysctl_sched_min_granularity
@@ -78,14 +78,14 @@ unsigned int sysctl_sched_child_runs_first __read_mostly;
 
 /*
  * SCHED_OTHER wake-up granularity.
- * (default: 5 msec * (1 + ilog(ncpus)), units: nanoseconds)
+ * (default: 1 msec * (1 + ilog(ncpus)), units: nanoseconds)
  *
  * This option delays the preemption effects of decoupled workloads
  * and reduces their over-scheduling. Synchronous workloads will still
  * have immediate wakeup/sleep latencies.
  */
-unsigned int sysctl_sched_wakeup_granularity = 5000000UL;
-unsigned int normalized_sysctl_sched_wakeup_granularity = 5000000UL;
+unsigned int sysctl_sched_wakeup_granularity = 1000000UL;
+unsigned int normalized_sysctl_sched_wakeup_granularity = 1000000UL;
 
 const_debug unsigned int sysctl_sched_migration_cost = 500000UL;
 
@@ -1393,13 +1393,14 @@ static inline bool cfs_bandwidth_used(void)
 	return static_key_false(&__cfs_bandwidth_used);
 }
 
-void account_cfs_bandwidth_used(int enabled, int was_enabled)
+void cfs_bandwidth_usage_inc(void)
 {
-	/* only need to count groups transitioning between enabled/!enabled */
-	if (enabled && !was_enabled)
-		static_key_slow_inc(&__cfs_bandwidth_used);
-	else if (!enabled && was_enabled)
-		static_key_slow_dec(&__cfs_bandwidth_used);
+	static_key_slow_inc(&__cfs_bandwidth_used);
+}
+
+void cfs_bandwidth_usage_dec(void)
+{
+	static_key_slow_dec(&__cfs_bandwidth_used);
 }
 #else /* HAVE_JUMP_LABEL */
 static bool cfs_bandwidth_used(void)
@@ -1407,7 +1408,8 @@ static bool cfs_bandwidth_used(void)
 	return true;
 }
 
-void account_cfs_bandwidth_used(int enabled, int was_enabled) {}
+void cfs_bandwidth_usage_inc(void) {}
+void cfs_bandwidth_usage_dec(void) {}
 #endif /* HAVE_JUMP_LABEL */
 
 /*
@@ -1655,6 +1657,8 @@ static void throttle_cfs_rq(struct cfs_rq *cfs_rq)
 	cfs_rq->throttled_timestamp = rq->clock;
 	raw_spin_lock(&cfs_b->lock);
 	list_add_tail_rcu(&cfs_rq->throttled_list, &cfs_b->throttled_cfs_rq);
+	if (!cfs_b->timer_active)
+		__start_cfs_bandwidth(cfs_b);
 	raw_spin_unlock(&cfs_b->lock);
 }
 
@@ -1767,6 +1771,13 @@ static int do_sched_cfs_period_timer(struct cfs_bandwidth *cfs_b, int overrun)
 	if (idle)
 		goto out_unlock;
 
+	/*
+	 * if we have relooped after returning idle once, we need to update our
+	 * status as actually running, so that other cpus doing
+	 * __start_cfs_bandwidth will stop trying to cancel us.
+	 */
+	cfs_b->timer_active = 1;
+
 	__refill_cfs_bandwidth_runtime(cfs_b);
 
 	if (!throttled) {
@@ -1827,7 +1838,13 @@ static const u64 min_bandwidth_expiration = 2 * NSEC_PER_MSEC;
 /* how long we wait to gather additional slack before distributing */
 static const u64 cfs_bandwidth_slack_period = 5 * NSEC_PER_MSEC;
 
-/* are we near the end of the current quota period? */
+/*
+ * Are we near the end of the current quota period?
+ *
+ * Requires cfs_b->lock for hrtimer_expires_remaining to be safe against the
+ * hrtimer base being cleared by __hrtimer_start_range_ns. In the case of
+ * migrate_hrtimers, base is never cleared, so we are fine.
+ */
 static int runtime_refresh_within(struct cfs_bandwidth *cfs_b, u64 min_expire)
 {
 	struct hrtimer *refresh_timer = &cfs_b->period_timer;
@@ -1903,10 +1920,12 @@ static void do_sched_cfs_slack_timer(struct cfs_bandwidth *cfs_b)
 	u64 expires;
 
 	/* confirm we're still not at a refresh boundary */
-	if (runtime_refresh_within(cfs_b, min_bandwidth_expiration))
-		return;
-
 	raw_spin_lock(&cfs_b->lock);
+	if (runtime_refresh_within(cfs_b, min_bandwidth_expiration)) {
+		raw_spin_unlock(&cfs_b->lock);
+		return;
+	}
+
 	if (cfs_b->quota != RUNTIME_INF && cfs_b->runtime > slice) {
 		runtime = cfs_b->runtime;
 		cfs_b->runtime = 0;
@@ -2031,11 +2050,11 @@ void __start_cfs_bandwidth(struct cfs_bandwidth *cfs_b)
 	 * (timer_active==0 becomes visible before the hrtimer call-back
 	 * terminates).  In either case we ensure that it's re-programmed
 	 */
-	while (unlikely(hrtimer_active(&cfs_b->period_timer))) {
+	while (unlikely(hrtimer_active(&cfs_b->period_timer)) &&
+	       hrtimer_try_to_cancel(&cfs_b->period_timer) < 0) {
+		/* bounce the lock to allow do_sched_cfs_period_timer to run */
 		raw_spin_unlock(&cfs_b->lock);
-		/* ensure cfs_b->lock is available while we wait */
-		hrtimer_cancel(&cfs_b->period_timer);
-
+		cpu_relax();
 		raw_spin_lock(&cfs_b->lock);
 		/* if someone else restarted the timer then we're done */
 		if (cfs_b->timer_active)
@@ -2052,7 +2071,7 @@ static void destroy_cfs_bandwidth(struct cfs_bandwidth *cfs_b)
 	hrtimer_cancel(&cfs_b->slack_timer);
 }
 
-void unthrottle_offline_cfs_rqs(struct rq *rq)
+static void unthrottle_offline_cfs_rqs(struct rq *rq)
 {
 	struct cfs_rq *cfs_rq;
 
@@ -2106,7 +2125,7 @@ static inline struct cfs_bandwidth *tg_cfs_bandwidth(struct task_group *tg)
 	return NULL;
 }
 static inline void destroy_cfs_bandwidth(struct cfs_bandwidth *cfs_b) {}
-void unthrottle_offline_cfs_rqs(struct rq *rq) {}
+static inline void unthrottle_offline_cfs_rqs(struct rq *rq) {}
 
 #endif /* CONFIG_CFS_BANDWIDTH */
 
@@ -2637,8 +2656,6 @@ static int select_idle_sibling(struct task_struct *p, int target)
 	int cpu = smp_processor_id();
 	int prev_cpu = task_cpu(p);
 	struct sched_domain *sd;
-	struct sched_group *sg;
-	int i;
 
 	/*
 	 * If the task is going to be woken-up on this cpu and if it is
@@ -2655,29 +2672,17 @@ static int select_idle_sibling(struct task_struct *p, int target)
 		return prev_cpu;
 
 	/*
-	 * Otherwise, iterate the domains and find an elegible idle cpu.
+	 * Otherwise, check assigned siblings to find an elegible idle cpu.
 	 */
 	sd = rcu_dereference(per_cpu(sd_llc, target));
+
 	for_each_lower_domain(sd) {
-		sg = sd->groups;
-		do {
-			if (!cpumask_intersects(sched_group_cpus(sg),
-						tsk_cpus_allowed(p)))
-				goto next;
-
-			for_each_cpu(i, sched_group_cpus(sg)) {
-				if (!idle_cpu(i))
-					goto next;
-			}
-
-			target = cpumask_first_and(sched_group_cpus(sg),
-					tsk_cpus_allowed(p));
-			goto done;
-next:
-			sg = sg->next;
-		} while (sg != sd->groups);
+		if (!cpumask_test_cpu(sd->idle_buddy, tsk_cpus_allowed(p)))
+			continue;
+		if (idle_cpu(sd->idle_buddy))
+			return sd->idle_buddy;
 	}
-done:
+
 	return target;
 }
 
@@ -3075,8 +3080,8 @@ static unsigned long __read_mostly max_load_balance_interval = HZ/10;
 struct lb_env {
 	struct sched_domain	*sd;
 
-	int			src_cpu;
 	struct rq		*src_rq;
+	int			src_cpu;
 
 	int			dst_cpu;
 	struct rq		*dst_rq;
@@ -3090,6 +3095,8 @@ struct lb_env {
 	unsigned int		loop_max;
 };
 
+static DEFINE_PER_CPU(bool, dbs_boost_needed);
+
 /*
  * move_task - move a task from one runqueue to another runqueue.
  * Both runqueues must be locked.
@@ -3100,6 +3107,8 @@ static void move_task(struct task_struct *p, struct lb_env *env)
 	set_task_cpu(p, env->dst_cpu);
 	activate_task(env->dst_rq, p, 0);
 	check_preempt_curr(env->dst_rq, p, 0);
+	if (task_notify_on_migrate(p))
+		per_cpu(dbs_boost_needed, env->dst_cpu) = true;
 }
 
 /*
@@ -4475,8 +4484,11 @@ more_balance:
 		/* All tasks on this runqueue were pinned by CPU affinity */
 		if (unlikely(env.flags & LBF_ALL_PINNED)) {
 			cpumask_clear_cpu(cpu_of(busiest), cpus);
-			if (!cpumask_empty(cpus))
+			if (!cpumask_empty(cpus)) {
+				env.loop = 0;
+				env.loop_break = sched_nr_migrate_break;
 				goto redo;
+			}
 			goto out_balanced;
 		}
 	}
@@ -4530,9 +4542,15 @@ more_balance:
 			 */
 			sd->nr_balance_failed = sd->cache_nice_tries+1;
 		}
-	} else
+	} else {
 		sd->nr_balance_failed = 0;
-
+		if (per_cpu(dbs_boost_needed, this_cpu)) {
+			per_cpu(dbs_boost_needed, this_cpu) = false;
+			atomic_notifier_call_chain(&migration_notifier_head,
+						   this_cpu,
+						   (void *)cpu_of(busiest));
+		}
+	}
 	if (likely(!active_balance)) {
 		/* We were unbalanced, so reset the balancing interval */
 		sd->balance_interval = sd->min_interval;
@@ -4575,10 +4593,11 @@ void idle_balance(int this_cpu, struct rq *this_rq)
 	struct sched_domain *sd;
 	int pulled_task = 0;
 	unsigned long next_balance = jiffies + HZ;
+	u64 curr_cost = 0;
 
 	this_rq->idle_stamp = this_rq->clock;
 
-	if (this_rq->avg_idle < sysctl_sched_migration_cost)
+	if (this_rq->avg_idle < this_rq->max_idle_balance_cost)
 		return;
 
 	/*
@@ -4591,14 +4610,29 @@ void idle_balance(int this_cpu, struct rq *this_rq)
 	for_each_domain(this_cpu, sd) {
 		unsigned long interval;
 		int balance = 1;
+		u64 t0, domain_cost, max = 5*sysctl_sched_migration_cost;
 
 		if (!(sd->flags & SD_LOAD_BALANCE))
 			continue;
 
+		if (this_rq->avg_idle < curr_cost + sd->max_newidle_lb_cost)
+			break;
+
 		if (sd->flags & SD_BALANCE_NEWIDLE) {
+			t0 = sched_clock_cpu(smp_processor_id());
+
 			/* If we've pulled tasks over stop searching: */
 			pulled_task = load_balance(this_cpu, this_rq,
 						   sd, CPU_NEWLY_IDLE, &balance);
+
+			domain_cost = sched_clock_cpu(smp_processor_id()) - t0;
+			if (domain_cost > max)
+				domain_cost = max;
+
+			if (domain_cost > sd->max_newidle_lb_cost)
+				sd->max_newidle_lb_cost = domain_cost;
+
+			curr_cost += domain_cost;
 		}
 
 		interval = msecs_to_jiffies(sd->balance_interval);
@@ -4620,6 +4654,9 @@ void idle_balance(int this_cpu, struct rq *this_rq)
 		 */
 		this_rq->next_balance = next_balance;
 	}
+
+	if (curr_cost > this_rq->max_idle_balance_cost)
+		this_rq->max_idle_balance_cost = curr_cost;
 }
 
 /*
@@ -4687,6 +4724,12 @@ static int active_load_balance_cpu_stop(void *data)
 out_unlock:
 	busiest_rq->active_balance = 0;
 	raw_spin_unlock_irq(&busiest_rq->lock);
+	if (per_cpu(dbs_boost_needed, target_cpu)) {
+		per_cpu(dbs_boost_needed, target_cpu) = false;
+		atomic_notifier_call_chain(&migration_notifier_head,
+					   target_cpu,
+					   (void *)cpu_of(busiest_rq));
+	}
 	return 0;
 }
 
@@ -4933,14 +4976,38 @@ static void rebalance_domains(int cpu, enum cpu_idle_type idle)
 	/* Earliest time when we have to do rebalance again */
 	unsigned long next_balance = jiffies + 60*HZ;
 	int update_next_balance = 0;
-	int need_serialize;
+	int need_serialize, need_decay = 0;
+	u64 max_cost = 0;
 
 	update_shares(cpu);
 
 	rcu_read_lock();
 	for_each_domain(cpu, sd) {
+		/*
+		 * Decay the newidle max times here because this is a regular
+		 * visit to all the domains. Decay ~0.5% per second.
+		 */
+		if (time_after(jiffies, sd->next_decay_max_lb_cost)) {
+			sd->max_newidle_lb_cost =
+			(sd->max_newidle_lb_cost * 254) / 256;
+			sd->next_decay_max_lb_cost = jiffies + HZ;
+			need_decay = 1;
+		}
+		max_cost += sd->max_newidle_lb_cost;
+
 		if (!(sd->flags & SD_LOAD_BALANCE))
 			continue;
+
+		/*
+		 * Stop the load balance at this level. There is another
+		 * * CPU in our sched group which is doing load balancing more
+		 * actively.
+		 */
+		if (!balance) {
+			if (need_decay)
+				continue;
+			break;
+		}
 
 		interval = sd->balance_interval;
 		if (idle != CPU_IDLE)
@@ -4974,14 +5041,14 @@ out:
 			next_balance = sd->last_balance + interval;
 			update_next_balance = 1;
 		}
-
+	}
+	if (need_decay) {
 		/*
-		 * Stop the load balance at this level. There is another
-		 * CPU in our sched group which is doing load balancing more
-		 * actively.
+		 * Ensure the rq-wide value also decays but keep it at a
+		 * reasonable floor to avoid funnies with rq->avg_idle.
 		 */
-		if (!balance)
-			break;
+		rq->max_idle_balance_cost =
+			max((u64)sysctl_sched_migration_cost, max_cost);
 	}
 	rcu_read_unlock();
 
@@ -5023,7 +5090,7 @@ static void nohz_idle_balance(int this_cpu, enum cpu_idle_type idle)
 
 		raw_spin_lock_irq(&this_rq->lock);
 		update_rq_clock(this_rq);
-		update_cpu_load(this_rq);
+		update_idle_cpu_load(this_rq);
 		raw_spin_unlock_irq(&this_rq->lock);
 
 		rebalance_domains(balance_cpu, CPU_IDLE);
@@ -5152,6 +5219,9 @@ static void rq_online_fair(struct rq *rq)
 static void rq_offline_fair(struct rq *rq)
 {
 	update_sysctl();
+
+	/* Ensure any throttled groups are reachable by pick_next_task */
+	unthrottle_offline_cfs_rqs(rq);
 }
 
 #endif /* CONFIG_SMP */
@@ -5190,11 +5260,15 @@ static void task_fork_fair(struct task_struct *p)
 	cfs_rq = task_cfs_rq(current);
 	curr = cfs_rq->curr;
 
-	if (unlikely(task_cpu(p) != this_cpu)) {
-		rcu_read_lock();
-		__set_task_cpu(p, this_cpu);
-		rcu_read_unlock();
-	}
+	/*
+	 * Not only the cpu but also the task_group of the parent might have
+	 * been changed after parent->se.parent,cfs_rq were copied to
+	 * child->se.parent,cfs_rq. So call __set_task_cpu() to make those
+	 * of child point to valid ones.
+	 */
+	rcu_read_lock();
+	__set_task_cpu(p, this_cpu);
+	rcu_read_unlock();
 
 	update_curr(cfs_rq);
 
@@ -5244,15 +5318,15 @@ static void switched_from_fair(struct rq *rq, struct task_struct *p)
 	struct cfs_rq *cfs_rq = cfs_rq_of(se);
 
 	/*
-	 * Ensure the task's vruntime is normalized, so that when its
+	 * Ensure the task's vruntime is normalized, so that when it's
 	 * switched back to the fair class the enqueue_entity(.flags=0) will
 	 * do the right thing.
 	 *
-	 * If it was on_rq, then the dequeue_entity(.flags=0) will already
-	 * have normalized the vruntime, if it was !on_rq, then only when
+	 * If it's on_rq, then the dequeue_entity(.flags=0) will already
+	 * have normalized the vruntime, if it's !on_rq, then only when
 	 * the task is sleeping will it still have non-normalized vruntime.
 	 */
-	if (!se->on_rq && p->state != TASK_RUNNING) {
+	if (!p->on_rq && p->state != TASK_RUNNING) {
 		/*
 		 * Fix up our vruntime so that the current sleep doesn't
 		 * cause 'unlimited' sleep bonus.
@@ -5447,7 +5521,8 @@ void init_tg_cfs_entry(struct task_group *tg, struct cfs_rq *cfs_rq,
 		se->cfs_rq = parent->my_q;
 
 	se->my_q = cfs_rq;
-	update_load_set(&se->load, 0);
+	/* guarantee group entities always have weight */
+	update_load_set(&se->load, NICE_0_LOAD);
 	se->parent = parent;
 }
 
@@ -5511,7 +5586,7 @@ static unsigned int get_rr_interval_fair(struct rq *rq, struct task_struct *task
 	 * idle runqueue:
 	 */
 	if (rq->cfs.load.weight)
-		rr_interval = NS_TO_JIFFIES(sched_slice(&rq->cfs, se));
+		rr_interval = NS_TO_JIFFIES(sched_slice(cfs_rq_of(se), se));
 
 	return rr_interval;
 }

@@ -617,6 +617,7 @@ static void reset_config(struct usb_composite_dev *cdev)
 		bitmap_zero(f->endpoints, 32);
 	}
 	cdev->config = NULL;
+	cdev->delayed_status = 0;
 }
 
 static int set_config(struct usb_composite_dev *cdev,
@@ -627,6 +628,16 @@ static int set_config(struct usb_composite_dev *cdev,
 	int			result = -EINVAL;
 	unsigned		power = gadget_is_otg(gadget) ? 8 : 100;
 	int			tmp;
+
+	/*
+	 * ignore 2nd time SET_CONFIGURATION
+	 * only for same config value twice.
+	 */
+	if (cdev->config && (cdev->config->bConfigurationValue == number)) {
+		DBG(cdev, "already in the same config with value %d\n",
+				number);
+		return 0;
+	}
 
 	if (number) {
 		list_for_each_entry(c, &cdev->configs, list) {
@@ -1420,6 +1431,10 @@ static void composite_disconnect(struct usb_gadget *gadget)
 		reset_config(cdev);
 	if (composite->disconnect)
 		composite->disconnect(cdev);
+	if (cdev->delayed_status != 0) {
+		INFO(cdev, "delayed status mismatch..resetting\n");
+		cdev->delayed_status = 0;
+	}
 	spin_unlock_irqrestore(&cdev->lock, flags);
 }
 
