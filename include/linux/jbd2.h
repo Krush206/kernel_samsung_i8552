@@ -147,6 +147,7 @@ typedef struct journal_header_s
 #define JBD2_CRC32_CHKSUM   1
 #define JBD2_MD5_CHKSUM     2
 #define JBD2_SHA1_CHKSUM    3
+#define JBD2_CRC32C_CHKSUM  4
 
 #define JBD2_CRC32_CHKSUM_SIZE 4
 
@@ -263,6 +264,7 @@ typedef struct journal_superblock_s
 #define JBD2_FEATURE_INCOMPAT_REVOKE		0x00000001
 #define JBD2_FEATURE_INCOMPAT_64BIT		0x00000002
 #define JBD2_FEATURE_INCOMPAT_ASYNC_COMMIT	0x00000004
+#define JBD2_FEATURE_INCOMPAT_CSUM_V2		0x00000008
 
 /* Features known to this kernel version: */
 #define JBD2_KNOWN_COMPAT_FEATURES	JBD2_FEATURE_COMPAT_CHECKSUM
@@ -940,6 +942,9 @@ struct journal_s
 	 * superblock pointer here
 	 */
 	void *j_private;
+
+	/* Reference to checksum algorithm driver via cryptoapi */
+	struct crypto_shash *j_chksum_driver;
 };
 
 /*
