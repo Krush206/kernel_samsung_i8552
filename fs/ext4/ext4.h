@@ -1553,6 +1553,23 @@ struct ext4_dir_entry_2 {
 };
 
 /*
+ * This is a bogus directory entry at the end of each leaf block that
+ * records checksums.
+ */
+struct ext4_dir_entry_tail {
+	__le32	det_reserved_zero1;	/* Pretend to be unused */
+	__le16	det_rec_len;		/* 12 */
+	__u8	det_reserved_zero2;	/* Zero name length */
+	__u8	det_reserved_ft;	/* 0xDE, fake file type */
+	__le32	det_checksum;		/* crc32c(uuid+inum+dirblock) */
+};
+
+#define EXT4_DIRENT_TAIL(block, blocksize) \
+	((struct ext4_dir_entry_tail *)(((void *)(block)) + \
+					((blocksize) - \
+					 sizeof(struct ext4_dir_entry_tail))))
+
+/*
  * Ext4 directory file types.  Only the low 3 bits are used.  The
  * other bits are reserved for now.
  */
@@ -1566,6 +1583,8 @@ struct ext4_dir_entry_2 {
 #define EXT4_FT_SYMLINK		7
 
 #define EXT4_FT_MAX		8
+
+#define EXT4_FT_DIR_CSUM	0xDE
 
 /*
  * EXT4_DIR_PAD defines the directory entries boundaries
@@ -1884,15 +1903,20 @@ extern unsigned ext4_num_overhead_clusters(struct super_block *sb,
 					   ext4_group_t block_group,
 					   struct ext4_group_desc *gdp);
 ext4_fsblk_t ext4_inode_to_goal_block(struct inode *);
+extern void ext4_validate_block_bitmap(struct super_block *sb,
+				       struct ext4_group_desc *desc,
+				       unsigned int block_group,
+				       struct buffer_head *bh);
 
 /* dir.c */
 extern int __ext4_check_dir_entry(const char *, unsigned int, struct inode *,
 				  struct file *,
 				  struct ext4_dir_entry_2 *,
-				  struct buffer_head *, unsigned int);
-#define ext4_check_dir_entry(dir, filp, de, bh, offset)			\
+				  struct buffer_head *, char *, int,
+				  unsigned int);
+#define ext4_check_dir_entry(dir, filp, de, bh, buf, size, offset)	\
 	unlikely(__ext4_check_dir_entry(__func__, __LINE__, (dir), (filp), \
-					(de), (bh), (offset)))
+					(de), (bh), (buf), (size), (offset)))
 extern int ext4_htree_store_dirent(struct file *dir_file, __u32 hash,
 				    __u32 minor_hash,
 				    struct ext4_dir_entry_2 *dirent);
