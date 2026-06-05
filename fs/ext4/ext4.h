@@ -1798,6 +1798,7 @@ struct mmp_struct {
 
 	__le16	mmp_pad1;
 	__le32	mmp_pad2[227];
+	__le32	mmp_checksum;		/* crc32c(uuid+mmp_block) */
 };
 
 /* arguments passed to the mmp thread */
